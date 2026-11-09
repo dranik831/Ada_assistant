@@ -1,0 +1,26 @@
+# Виртуальное окружение
+venv/
+.venv/
+env/
+
+# Кэш Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Конфиденциальные данные и токены
+.env
+*.session
+*.session-journal
+
+# Логи и база данных (жюри создает свою чистую БД)
+logs/
+*.log
+data/
+*.sqlite
+*.db
+
+# Файлы систем и IDE
+.vscode/
+.idea/
+.DS_Store
