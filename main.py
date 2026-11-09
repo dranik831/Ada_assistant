@@ -57,8 +57,10 @@ async def send_user_message(target_id: int, text: str):
         logger.error(f"Не удалось отправить сообщение {target_id}: {e}")
 
 autonomy = AutonomyEngine(db, brain, emotions, send_user_message)
+_instance_lock_file = None
 
 _pending_messages: dict[tuple[int, int], dict] = {}
+
 _message_locks = defaultdict(asyncio.Lock)
 _group_last_reply: dict[int, float] = {}
 _group_batches: dict[int, dict] = {}
@@ -613,7 +615,27 @@ async def on_raw_event(update):
     except Exception:
         logger.exception("Ошибка журналирования реакции")
 
+def acquire_instance_lock():
+    global _instance_lock_file
+    lock_path = config.DATA_DIR / "ada.lock"
+    _instance_lock_file = open(lock_path, "a+", encoding="utf-8")
+    try:
+        if _instance_lock_file.tell() == 0:
+            _instance_lock_file.write("0")
+            _instance_lock_file.flush()
+        if os.name == "nt":
+            import msvcrt
+            _instance_lock_file.seek(0)
+            msvcrt.locking(_instance_lock_file.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(_instance_lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except (OSError, BlockingIOError):
+        logger.error("Ада уже запущена: не удалось получить lock %s", lock_path)
+        raise SystemExit(2)
+
 async def main():
+    acquire_instance_lock()
     await db.init()
     
     if not await agent.verify_connection():
