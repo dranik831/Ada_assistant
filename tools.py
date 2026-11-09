@@ -9,23 +9,39 @@ from pathlib import Path
 import aiohttp
 import trafilatura
 from telethon import TelegramClient
-from telethon.tl.functions.messages import EditMessageRequest, DeleteMessagesRequest
+from telethon.tl.functions.messages import EditMessageRequest, DeleteMessagesRequest, SendReactionRequest
+from telethon.tl.types import ReactionEmoji
+
 from telethon.tl.types import User
 from telethon.tl.functions.account import UpdateProfileRequest
 from database import Database
+import config
 
 logger = logging.getLogger("Ada.Tools")
 
 class AgentTools:
-    def __init__(self, db: Database, tg_client: TelegramClient):
+    def __init__(self, db: Database, tg_client: TelegramClient, emotions=None):
         self.db = db
         self.client = tg_client
+        self.emotions = emotions
         self._admin_context: ContextVar[bool] = ContextVar("ada_admin_context", default=False)
+        self._actor_context: ContextVar[int] = ContextVar("ada_actor_context", default=0)
+        self._chat_context: ContextVar[int] = ContextVar("ada_chat_context", default=0)
+        self._memory_write_context: ContextVar[bool] = ContextVar("ada_memory_write_context", default=False)
+        self._calendar_lock = asyncio.Lock()
+
 
     def set_admin_context(self, is_admin: bool):
         self._admin_context.set(bool(is_admin))
 
+    def set_request_context(self, actor_id: int, chat_id: int, is_admin: bool, allow_memory_write: bool = False):
+        self._actor_context.set(actor_id)
+        self._chat_context.set(chat_id)
+        self._admin_context.set(bool(is_admin))
+        self._memory_write_context.set(bool(allow_memory_write))
+
     def _is_admin(self) -> bool:
+
         return self._admin_context.get()
 
     async def list_my_capabilities(self) -> str:
@@ -222,7 +238,12 @@ class AgentTools:
     async def react_to_message(self, target: str, message_id: int, reaction: str = "👍") -> str:
         try:
             entity = await self.client.get_entity(int(target) if str(target).lstrip('-').isdigit() else target)
-            await self.client.send_reaction(entity, int(message_id), reaction)
+            await self.client(SendReactionRequest(
+                peer=entity,
+                msg_id=int(message_id),
+                reaction=[ReactionEmoji(emoticon=str(reaction)[:8])],
+            ))
+
             return f"Реакция {reaction} добавлена."
         except Exception as e:
             return f"Не удалось поставить реакцию: {e}"
@@ -273,21 +294,84 @@ class AgentTools:
 
     async def remember_scoped_fact(self, scope: str, content: str, category: str = "fact",
                                    owner_id: int = 0, chat_id: int = 0, importance: int = 5) -> str:
-        await self.db.add_scoped_memory(scope, content, category, owner_id or None, chat_id or None, importance, source="agent")
-        return "Факт сохранён в контекстной памяти."
+        if not self._memory_write_context.get():
+            return "Не сохранено: память изменяется только по явной просьбе собеседника."
+        actor_id = self._actor_context.get()
+        current_chat = self._chat_context.get()
+        if scope == "global" and not self._is_admin():
+            return "Только владелец может добавлять глобальные воспоминания."
+        safe_scope = scope if scope in {"global", "person", "group"} else "person"
+        await self.db.add_scoped_memory(
+            safe_scope, content, category,
+            owner_id=None if safe_scope == "global" else actor_id,
+            chat_id=current_chat if safe_scope == "group" else None,
+            importance=importance,
+            confidence=1.0,
+            source="explicit_request",
+        )
+        return "Факт сохранён с источником — явная просьба пользователя."
+
 
     async def search_scoped_memory(self, query: str, owner_id: int = 0, chat_id: int = 0) -> str:
-        rows = await self.db.search_scoped_memories(query, owner_id or None, chat_id or None)
-        return "\n".join(f"#{r['id']} [{r['scope']}/{r['category']}] {r['content']}" for r in rows) or "В памяти ничего не найдено."
+        rows = await self.db.get_relevant_memories(
+            query,
+            owner_id=self._actor_context.get(),
+            chat_id=self._chat_context.get(),
+            is_group=self._chat_context.get() < 0,
+            limit=8,
+        )
+        return "\n".join(
+            f"#{row['id']} [{row['scope']}/{row['category']}; confidence={row['confidence']:.2f}] {row['content']}"
+            for row in rows if float(row.get("confidence", 0)) >= 0.8
+        ) or "Подтверждённых совпадений в памяти не найдено."
+
 
     async def create_reminder(self, owner_id: int, description: str, due_at: str, chat_id: int = 0) -> str:
+        if not self._is_admin() or int(owner_id) != config.ADMIN_USER_ID:
+            return "Создавать напоминания в личном календаре может только Создатель."
+        try:
+            datetime.fromisoformat(due_at)
+        except ValueError:
+            return "Неверная дата. Используй ISO-формат: 2026-11-08T15:00:00"
         task_id = await self.db.create_task(owner_id, description, due_at, chat_id or None)
         return f"Напоминание создано, ID={task_id}, время={due_at}."
+
+
+    async def set_person_category(self, user_id: int, category: str) -> str:
+        if not self._is_admin() or not self._memory_write_context.get():
+            return "Изменять категорию людей может только администратор."
+        if category not in {"стандарт", "друг", "админ"}:
+            return "Категория должна быть: стандарт, друг или админ."
+        if category == "админ" and user_id != config.ADMIN_USER_ID:
+            return "Добавлять новых администраторов через модель запрещено."
+        await self.db.set_user_category(user_id, category)
+        return f"Категория пользователя {user_id} изменена на «{category}»."
+
+    async def set_person_respect(self, user_id: int, respect: int) -> str:
+        if not self._is_admin() or not self._memory_write_context.get():
+            return "Управлять уважением может только администратор."
+        await self.db.update_user_relationship(user_id, {"respect": max(0, min(100, int(respect)))})
+        return f"Уважение пользователя {user_id}: {max(0, min(100, int(respect)))}."
+
+    async def set_mood(self, emotion: str, value: int) -> str:
+        if not self._is_admin() or not self._memory_write_context.get() or self.emotions is None:
+            return "Изменять настроение может только администратор."
+        await self.emotions.set_emotion(emotion, max(0, min(100, int(value))))
+        return f"Эмоция {emotion} установлена в {max(0, min(100, int(value)))}."
+
+    async def clear_memory(self) -> str:
+        if not self._is_admin():
+            return "Очищать память может только администратор."
+        await self.db.clear_memory()
+        return "Память очищена полностью."
 
     async def add_calendar_event(self, owner_id: int, title: str, start_at: str,
                                  end_at: str = "", details: str = "") -> str:
         """Добавляет событие в локальный календарь секретаря."""
-        path = Path(__import__("config").CALENDAR_FILE)
+        if not self._is_admin():
+            return "Добавлять события в календарь Драника может только Создатель."
+        path = config.CALENDAR_FILE
+
         path.parent.mkdir(parents=True, exist_ok=True)
         try:
             datetime.fromisoformat(start_at)
@@ -306,7 +390,10 @@ class AgentTools:
         return f"Событие добавлено в календарь, ID={next_id}."
 
     async def list_calendar_events(self, from_at: str = "", to_at: str = "") -> str:
-        path = Path(__import__("config").CALENDAR_FILE)
+        if not self._is_admin():
+            return "Календарь Драника доступен только Создателю."
+        path = config.CALENDAR_FILE
+
         if not path.exists():
             return "Календарь пуст."
         try:
@@ -324,17 +411,71 @@ class AgentTools:
             return f"Ошибка чтения календаря: {e}"
 
     async def import_schedule_json(self, content: str) -> str:
-        """Заменяет расписание из JSON, полученного от владельца или парсера."""
+        if not self._is_admin():
+            return "Загружать расписание может только Создатель."
         try:
             data = json.loads(content)
             if not isinstance(data, (list, dict)):
                 return "Расписание должно быть JSON-массивом или объектом."
-            path = Path(__import__("config").SCHEDULE_FILE)
+            path = config.SCHEDULE_FILE
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
             return "Расписание сохранено."
         except (json.JSONDecodeError, OSError) as e:
             return f"Не удалось сохранить расписание: {e}"
+
+    async def read_schedule(self) -> str:
+        if not self._is_admin():
+            return "Личное расписание доступно только Создателю."
+        path = config.SCHEDULE_FILE
+        if not path.exists():
+            return "Расписание пока не импортировано. Нужен JSON-экспорт расписания."
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            return json.dumps(data, ensure_ascii=False, indent=2)[:8000]
+        except (OSError, json.JSONDecodeError) as e:
+            return f"Ошибка чтения расписания: {e}"
+
+    async def list_tasks(self, owner_id: int = 0) -> str:
+        rows = await self.db.list_tasks(owner_id or self._actor_context.get())
+        return "\n".join(f"#{row['id']} {row['due_at']} — {row['description']}" for row in rows) or "Активных задач нет."
+
+    async def create_meeting_request(self, requester_id: int, requester_name: str, purpose: str,
+                                    preferred_time: str = "") -> str:
+        async with __import__("aiosqlite").connect(self.db.db_path) as db:
+            await db.execute("""
+                INSERT INTO meeting_requests(requester_id, requester_name, purpose, preferred_time)
+                VALUES (?, ?, ?, ?)
+            """, (requester_id, requester_name[:200], purpose[:2000], preferred_time[:300]))
+            await db.commit()
+        return "Запрос на встречу сохранён и передан Дранику на рассмотрение."
+
+    async def list_meeting_requests(self) -> str:
+        if not self._is_admin():
+            return "Просматривать запросы может только Создатель."
+        async with __import__("aiosqlite").connect(self.db.db_path) as db:
+            db.row_factory = __import__("aiosqlite").Row
+            cursor = await db.execute("SELECT * FROM meeting_requests WHERE status='pending' ORDER BY id DESC LIMIT 30")
+            rows = await cursor.fetchall()
+        return "\n".join(
+            f"#{r['id']} {r['requester_name']} ({r['requester_id']}): {r['purpose']}; время: {r['preferred_time'] or 'не указано'}"
+            for r in rows
+        ) or "Новых запросов нет."
+
+    async def delete_calendar_event(self, event_id: int) -> str:
+        if not self._is_admin():
+            return "Удалять встречи может только Создатель."
+        path = config.CALENDAR_FILE
+        try:
+            events = json.loads(path.read_text(encoding="utf-8")) if path.exists() else []
+            updated = [item for item in events if int(item.get("id", -1)) != int(event_id)]
+            if len(updated) == len(events):
+                return "Событие не найдено."
+            path.write_text(json.dumps(updated, ensure_ascii=False, indent=2), encoding="utf-8")
+            return "Событие удалено из календаря."
+        except (OSError, ValueError, json.JSONDecodeError) as e:
+            return f"Ошибка удаления встречи: {e}"
+
 
     async def list_dialogs(self, limit: int = 30) -> str:
         """Возвращает список последних диалогов аккаунта."""
@@ -375,9 +516,20 @@ class AgentTools:
             return f"Ошибка поиска: {e}"
 
     async def remember_fact(self, category: str, content: str) -> str:
-        """Записывает важный факт или событие в долговременную память."""
-        await self.db.add_memory(category, content, importance=7)
-        return f"Запомнила: [{category}] {content}"
+        """Сохраняет неподтверждённый кандидат памяти, не выдавая его за факт."""
+        if not self._memory_write_context.get():
+            return "Не сохранено: память изменяется только по явной просьбе собеседника."
+        await self.db.add_scoped_memory(
+            "person" if self._actor_context.get() else "global",
+            content,
+            category,
+            owner_id=self._actor_context.get() or None,
+            chat_id=self._chat_context.get() or None,
+            importance=7,
+            confidence=1.0,
+            source="explicit_user",
+        )
+        return f"Запомнила подтверждённый факт: [{category}] {content}"
 
     async def search_memory(self, query: str) -> str:
         """Ищет совпадения в сохраненных воспоминаниях."""

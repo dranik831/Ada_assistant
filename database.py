@@ -21,15 +21,32 @@ class Database:
                     affection INTEGER DEFAULT 50,
                     respect INTEGER DEFAULT 50,
                     irritation INTEGER DEFAULT 0,
-                    status TEXT DEFAULT 'unknown',
+                    status TEXT DEFAULT 'standard',
                     notes TEXT DEFAULT '[]',
                     autonomy_allowed INTEGER DEFAULT 0,
-                    last_interaction TEXT DEFAULT CURRENT_TIMESTAMP
+                    last_interaction TEXT DEFAULT CURRENT_TIMESTAMP,
+                    last_proactive_at TEXT,
+                    proactive_day TEXT DEFAULT '',
+                    proactive_count INTEGER DEFAULT 0
                 );
             """)
 
+            await db.execute("UPDATE users SET status = 'friend' WHERE status IN ('trusted', 'close_friend')")
+            await db.execute("UPDATE users SET status = 'admin' WHERE status = 'admin'")
+            await db.execute("UPDATE users SET status = 'standard' WHERE status IS NULL OR status IN ('unknown', 'enemy', 'disliked', 'acquaintance')")
+            cursor = await db.execute("PRAGMA table_info(users)")
+            user_columns = {column[1] for column in await cursor.fetchall()}
+            for column, definition in {
+                "last_proactive_at": "TEXT",
+                "proactive_day": "TEXT DEFAULT ''",
+                "proactive_count": "INTEGER DEFAULT 0",
+            }.items():
+                if column not in user_columns:
+                    await db.execute(f"ALTER TABLE users ADD COLUMN {column} {definition}")
+
             await db.execute("""
-            CREATE TABLE IF NOT EXISTS messages (
+                CREATE TABLE IF NOT EXISTS messages (
+
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 user_id INTEGER,
                 chat_id INTEGER,
@@ -115,7 +132,20 @@ class Database:
                 );
             """)
             await db.execute("""
+                CREATE TABLE IF NOT EXISTS meeting_requests (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    requester_id INTEGER NOT NULL,
+                    requester_name TEXT DEFAULT '',
+                    purpose TEXT NOT NULL,
+                    preferred_time TEXT DEFAULT '',
+                    status TEXT DEFAULT 'pending',
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    resolved_at TEXT
+                );
+            """)
+            await db.execute("""
                 CREATE TABLE IF NOT EXISTS telegram_events (
+
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     event_type TEXT NOT NULL,
                     chat_id INTEGER,
@@ -137,6 +167,20 @@ class Database:
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute("INSERT OR REPLACE INTO system_kv (key, value) VALUES (?, ?)", (key, value))
             await db.commit()
+
+    async def get_user(self, user_id: int) -> dict | None:
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute("SELECT * FROM users WHERE user_id = ?", (user_id,))
+            row = await cursor.fetchone()
+            return dict(row) if row else None
+
+    async def get_chat(self, chat_id: int) -> dict | None:
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute("SELECT * FROM chats WHERE chat_id = ?", (chat_id,))
+            row = await cursor.fetchone()
+            return dict(row) if row else None
 
     async def get_or_create_user(self, user_id: int, username: str = "", first_name: str = "", is_admin: bool = False) -> dict:
         async with aiosqlite.connect(self.db_path) as db:
@@ -165,7 +209,7 @@ class Database:
             else:
                 await db.execute("""
                     INSERT INTO users (user_id, username, first_name, relationship, trust, affection, respect, irritation, status, autonomy_allowed, last_interaction)
-                    VALUES (?, ?, ?, 50, 40, 40, 40, 0, 'unknown', 0, ?)
+                    VALUES (?, ?, ?, 50, 40, 40, 40, 0, 'standard', 0, ?)
                 """, (user_id, username, first_name, now_str))
             await db.commit()
 
@@ -175,7 +219,7 @@ class Database:
     async def update_user_relationship(self, user_id: int, updates: dict):
         fields, values = [], []
         for k, v in updates.items():
-            if k in ["relationship", "trust", "affection", "respect", "irritation", "status", "notes", "autonomy_allowed", "last_interaction"]:
+            if k in ["relationship", "trust", "affection", "respect", "irritation", "status", "notes", "autonomy_allowed", "last_interaction", "last_proactive_at", "proactive_day", "proactive_count"]:
                 fields.append(f"{k} = ?")
                 values.append(json.dumps(v, ensure_ascii=False) if isinstance(v, (list, dict)) else v)
         if not fields:
@@ -284,11 +328,22 @@ class Database:
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
             cursor = await db.execute("""
-                SELECT * FROM users 
-                WHERE autonomy_allowed = 1 
-                  AND status NOT IN ('enemy', 'disliked')
+                SELECT * FROM users
+                WHERE autonomy_allowed = 1
+                  AND status IN ('standard', 'friend', 'admin')
+                  AND relationship >= 20
             """)
             return [dict(r) for r in await cursor.fetchall()]
+
+    async def mark_proactive_attempt(self, user_id: int, timestamp: str, day: str):
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute("""
+                UPDATE users SET last_proactive_at = ?,
+                    proactive_count = CASE WHEN proactive_day = ? THEN proactive_count + 1 ELSE 1 END,
+                    proactive_day = ? WHERE user_id = ?
+            """, (timestamp, day, day, user_id))
+            await db.commit()
+
 
     async def set_user_category(self, user_id: int, category: str):
         category = category if category in {"стандарт", "друг", "админ"} else "стандарт"
@@ -308,9 +363,23 @@ class Database:
             await db.execute("DELETE FROM memory_items")
             await db.execute("DELETE FROM brain_logs")
             await db.execute("DELETE FROM messages")
+            await db.execute("DELETE FROM telegram_events")
+            await db.execute("UPDATE users SET notes = '[]', last_interaction = CURRENT_TIMESTAMP")
+            await db.execute("UPDATE chats SET context_summary = '', rules = '', last_ada_reply = ''")
             await db.commit()
 
+
+    async def list_scoped_memories(self, limit: int = 100) -> list:
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute(
+                "SELECT id, scope, owner_id, chat_id, category, content, importance, confidence, source FROM memory_items ORDER BY importance DESC, id DESC LIMIT ?",
+                (limit,),
+            )
+            return [dict(row) for row in await cursor.fetchall()]
+
     async def list_tasks(self, owner_id: int | None = None, limit: int = 30) -> list:
+
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
             if owner_id is None:
@@ -347,7 +416,46 @@ class Database:
             """, (pattern, pattern, owner_id, chat_id, limit))
             return [dict(r) for r in await cursor.fetchall()]
 
+    async def get_relevant_memories(self, query: str, owner_id: int, chat_id: int,
+                                    is_group: bool, limit: int = 8) -> list:
+        import re
+        tokens = {token.lower() for token in re.findall(r"[\w-]{4,}", query)}
+        stopwords = {"который", "которая", "которые", "этого", "этому", "пожалуйста", "сейчас", "можешь", "нужно", "хочу", "привет", "здравствуйте"}
+        tokens -= stopwords
+        if not tokens:
+            return []
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            if is_group:
+                cursor = await db.execute("""
+                    SELECT * FROM memory_items
+                    WHERE (scope = 'global' AND owner_id IS NULL AND chat_id IS NULL)
+                       OR (scope = 'group' AND chat_id = ?)
+                    ORDER BY importance DESC, created_at DESC LIMIT 200
+                """, (chat_id,))
+            else:
+                cursor = await db.execute("""
+                    SELECT * FROM memory_items
+                    WHERE (scope = 'global' AND owner_id IS NULL AND chat_id IS NULL)
+                       OR (scope = 'person' AND owner_id = ?)
+                    ORDER BY importance DESC, created_at DESC LIMIT 200
+                """, (owner_id,))
+            rows = [dict(row) for row in await cursor.fetchall()]
+        now = datetime.now().isoformat()
+        scored = []
+        for row in rows:
+            if row.get("expires_at") and row["expires_at"] <= now:
+                continue
+            content_tokens = {token.lower() for token in re.findall(r"[\w-]{4,}", row["content"])}
+            overlap = len(tokens & content_tokens)
+            if overlap:
+                score = overlap * 3 + int(row["importance"]) + float(row["confidence"])
+                scored.append((score, row))
+        scored.sort(key=lambda item: item[0], reverse=True)
+        return [row for _, row in scored[:limit]]
+
     async def delete_scoped_memory(self, memory_id: int):
+
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute("DELETE FROM memory_items WHERE id = ?", (memory_id,))
             await db.commit()
@@ -411,4 +519,5 @@ class Database:
     async def delete_memory(self, memory_id: int):
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute("DELETE FROM global_memories WHERE id = ?", (memory_id,))
+            await db.execute("DELETE FROM memory_items WHERE id = ?", (memory_id,))
             await db.commit()

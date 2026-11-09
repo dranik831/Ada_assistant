@@ -51,12 +51,23 @@ class UniversalAgent:
             "list_dialogs": self.tools.list_dialogs,
             "read_chat_history": self.tools.read_chat_history,
             "search_telegram": self.tools.search_telegram,
-            "remember_fact": self.tools.remember_fact,
             "search_memory": self.tools.search_memory,
-            "remember_scoped_fact": self.tools.remember_scoped_fact,
             "search_scoped_memory": self.tools.search_scoped_memory,
+
             "create_reminder": self.tools.create_reminder,
+            "add_calendar_event": self.tools.add_calendar_event,
+            "list_calendar_events": self.tools.list_calendar_events,
+            "import_schedule_json": self.tools.import_schedule_json,
+            "read_schedule": self.tools.read_schedule,
+            "list_tasks": self.tools.list_tasks,
+            "delete_calendar_event": self.tools.delete_calendar_event,
+            "create_meeting_request": self.tools.create_meeting_request,
+            "list_meeting_requests": self.tools.list_meeting_requests,
+            "set_person_category": self.tools.set_person_category,
+            "set_person_respect": self.tools.set_person_respect,
+            "set_mood": self.tools.set_mood,
         }
+
 
     async def verify_connection(self) -> bool:
         try:
@@ -213,18 +224,6 @@ class UniversalAgent:
             {
                 "type": "function",
                 "function": {
-                    "name": "remember_fact",
-                    "description": "Запомнить факт в долговременную память.",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {"category": {"type": "string"}, "content": {"type": "string"}},
-                        "required": ["category", "content"]
-                    }
-                }
-            },
-            {
-                "type": "function",
-                "function": {
                     "name": "search_memory",
                     "description": "Поиск по сохраненным воспоминаниям.",
                     "parameters": {
@@ -249,11 +248,24 @@ class UniversalAgent:
             action("mark_chat_read", "Отметить чат прочитанным.", {"target": {"type": "string"}}, ["target"]),
             action("get_group_members", "Получить участников группы.", {"target": {"type": "string"}, "limit": {"type": "integer"}}, ["target"]),
             action("get_chat_info", "Получить информацию о чате.", {"target": {"type": "string"}}, ["target"]),
-            action("remember_scoped_fact", "Сохранить факт в памяти человека или чата.", {"scope": {"type": "string"}, "content": {"type": "string"}, "category": {"type": "string"}, "owner_id": {"type": "integer"}, "chat_id": {"type": "integer"}, "importance": {"type": "integer"}}, ["scope", "content"]),
+
             action("search_scoped_memory", "Искать в контекстной памяти.", {"query": {"type": "string"}, "owner_id": {"type": "integer"}, "chat_id": {"type": "integer"}}, ["query"]),
             action("create_reminder", "Создать напоминание в ISO-времени.", {"owner_id": {"type": "integer"}, "description": {"type": "string"}, "due_at": {"type": "string"}, "chat_id": {"type": "integer"}}, ["owner_id", "description", "due_at"]),
+            action("add_calendar_event", "Добавить событие в календарь владельца.", {"owner_id": {"type": "integer"}, "title": {"type": "string"}, "start_at": {"type": "string"}, "end_at": {"type": "string"}, "details": {"type": "string"}}, ["owner_id", "title", "start_at"]),
+            action("list_calendar_events", "Показать события календаря.", {"from_at": {"type": "string"}, "to_at": {"type": "string"}}, []),
+            action("import_schedule_json", "Импортировать расписание из JSON.", {"content": {"type": "string"}}, ["content"]),
+            action("read_schedule", "Прочитать импортированное расписание.", {}, []),
+            action("list_tasks", "Показать активные напоминания.", {"owner_id": {"type": "integer"}}, []),
+            action("delete_calendar_event", "Удалить встречу по ID.", {"event_id": {"type": "integer"}}, ["event_id"]),
+            action("create_meeting_request", "Сохранить запрос на встречу, не подтверждая её.", {"requester_id": {"type": "integer"}, "requester_name": {"type": "string"}, "purpose": {"type": "string"}, "preferred_time": {"type": "string"}}, ["requester_id", "requester_name", "purpose"]),
+            action("list_meeting_requests", "Показать владельцу необработанные запросы на встречу.", {}, []),
+            action("set_person_category", "Изменить категорию человека по явной просьбе владельца.", {"user_id": {"type": "integer"}, "category": {"type": "string"}}, ["user_id", "category"]),
+            action("set_person_respect", "Изменить уважение по явной просьбе владельца.", {"user_id": {"type": "integer"}, "respect": {"type": "integer"}}, ["user_id", "respect"]),
+            action("set_mood", "Изменить состояние по явной просьбе владельца.", {"emotion": {"type": "string"}, "value": {"type": "integer"}}, ["emotion", "value"]),
         ])
         return specs
+
+
 
     async def run_turn(self, system_prompt: str, user_prompt: str, max_steps: int = 5) -> dict:
         messages = [
