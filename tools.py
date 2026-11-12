@@ -64,6 +64,18 @@ class AgentTools:
         if not self._is_admin():
             return "Ошибка: Доступ к терминалу заблокирован политикой безопасности. Команда доступна только Создателю."
 
+        if config.SYSTEM_COMMAND_ALLOWLIST:
+            first_token = command.strip().split(maxsplit=1)[0].strip('"\'').lower()
+            allowed = any(
+                first_token == entry or first_token.endswith(entry) or first_token.startswith(entry)
+                for entry in config.SYSTEM_COMMAND_ALLOWLIST
+            )
+            if not allowed:
+                return (
+                    f"Команда '{first_token}' не входит в белый список разрешённых программ "
+                    f"({', '.join(config.SYSTEM_COMMAND_ALLOWLIST)})."
+                )
+
         logger.info(f"Исполнение терминальной команды: {command}")
         try:
             process = await asyncio.create_subprocess_shell(

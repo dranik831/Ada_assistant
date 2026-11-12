@@ -48,6 +48,9 @@ QUIET_HOURS_END=8
 # Расписание УКРТБ (study.ukrtb.ru)
 UKRTB_GROUP_ID=
 UKRTB_GROUP_LABEL=
+
+# Белый список системных команд (через запятую, пусто = любые)
+SYSTEM_COMMAND_ALLOWLIST=
 """
 
 def init_environment():
@@ -132,6 +135,14 @@ QUIET_HOURS_END = int(os.getenv("QUIET_HOURS_END", "8"))
 # Учебный портал УКРТБ (study.ukrtb.ru): расписание занятий.
 UKRTB_GROUP_ID = os.getenv("UKRTB_GROUP_ID", "bf399ce2-089f-11f1-9b37-864d651ef868").strip()
 UKRTB_GROUP_LABEL = os.getenv("UKRTB_GROUP_LABEL", "ССА-17-26П").strip()
+
+# Белый список системных команд (через запятую). Пусто = разрешены любые
+# команды для Создателя; заполнено = только перечисленные программы.
+SYSTEM_COMMAND_ALLOWLIST = [
+    token.strip().lower()
+    for token in os.getenv("SYSTEM_COMMAND_ALLOWLIST", "").split(",")
+    if token.strip()
+]
 
 DB_PATH = DATA_DIR / "ada.db"
 SESSION_PATH = DATA_DIR / "ada_userbot"
