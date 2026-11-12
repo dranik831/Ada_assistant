@@ -373,7 +373,7 @@ async def handle_edit_mode(event, text: str) -> bool:
     if command == "расписание" and len(parts) >= 2 and parts[1].lower() == "показать":
         await event.reply(await tools.read_schedule())
         return True
-    if command == "расписание" and len(parts) >= 2 and parts[1].lower() == "импорт":
+    if command == "расписание" and len(parts) >= 3 and parts[1].lower() == "импорт":
         await event.reply(await tools.import_schedule_json(parts[2]))
         return True
     if command == "расписание" and len(parts) >= 2 and parts[1].lower() == "обновить":
