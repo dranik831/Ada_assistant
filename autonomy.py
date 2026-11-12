@@ -74,6 +74,7 @@ class AutonomyEngine:
                 await self.emotions.decay_towards_baseline()
                 await self._deliver_due_tasks()
                 await self._deliver_calendar_reminders()
+                await self._deliver_morning_schedule()
 
 
                 is_active = await self.db.get_kv("autonomy_enabled", "true" if AUTONOMY_ENABLED else "false")
@@ -145,6 +146,28 @@ class AutonomyEngine:
 
             except Exception as e:
                 logger.exception(f"Исключение в модуле автономии: {e}")
+
+    async def _deliver_morning_schedule(self):
+        """Раз в день отправляет Создателю расписание группы на сегодня."""
+        import schedule_api
+        today = datetime.now().date().isoformat()
+        sent_day = await self.db.get_kv("morning_schedule_day", "")
+        if sent_day == today:
+            return
+        hour = datetime.now().hour
+        if not (7 <= hour < 14):
+            return
+        if self.is_quiet_time():
+            return
+        try:
+            data = await schedule_api.get_my_schedule()
+            if not data:
+                return
+            text = schedule_api.format_schedule(data)
+            await self.send_message(ADMIN_USER_ID, f"Расписание на сегодня:\n{text}")
+            await self.db.set_kv("morning_schedule_day", today)
+        except Exception:
+            logger.exception("Не удалось отправить утреннее расписание")
 
     async def _deliver_calendar_reminders(self):
         if not CALENDAR_FILE.exists():
