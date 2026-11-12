@@ -190,21 +190,20 @@ class Database:
             
             if row:
                 u_dict = dict(row)
-                if is_admin and (u_dict["respect"] < 100 or u_dict["status"] != "creator"):
-                    await db.execute("""
-                        UPDATE users SET respect = 100, trust = 100, affection = 100, 
-                        irritation = 0, status = 'creator' WHERE user_id = ?
-                    """, (user_id,))
+                # Создателю закрепляется только категория. Уважение остаётся тем,
+                # что установлено инструментом или командой редактирования.
+                if is_admin and u_dict["status"] != "creator":
+                    await db.execute("UPDATE users SET status = 'creator' WHERE user_id = ?", (user_id,))
                     await db.commit()
-                    cursor = await db.execute("SELECT * FROM users WHERE user_id = ?", (user_id,))
-                    return dict(await cursor.fetchone())
+                    u_dict["status"] = "creator"
                 return u_dict
 
             now_str = datetime.now().isoformat()
             if is_admin:
+                # Создатель: уважение по умолчанию 85, меняется только вручную.
                 await db.execute("""
                     INSERT INTO users (user_id, username, first_name, relationship, trust, affection, respect, irritation, status, autonomy_allowed, last_interaction)
-                    VALUES (?, ?, ?, 100, 100, 100, 100, 0, 'creator', 1, ?)
+                    VALUES (?, ?, ?, 85, 80, 55, 85, 0, 'creator', 1, ?)
                 """, (user_id, username, first_name, now_str))
             else:
                 await db.execute("""

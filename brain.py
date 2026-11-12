@@ -66,18 +66,23 @@ class Brain:
             mem_text += f"\n- [старые заметки; проверь перед использованием] {personal_notes}"
 
         time_info = self._get_time_context(user_row.get("last_interaction"))
-        respect_val = 100 if is_admin else user_row.get("respect", 50)
+        respect_val = int(user_row.get("respect", 50))
         secretary_rules = (
             "Ты также секретарь Драника. При первом обращении нового человека поздоровайся: "
             "«Здравствуйте, я секретарь Драника. Чтобы занять время встречи с ним или передать ему что-то, напишите мне». "
             "Не обещай встречу и не утверждай, что передала сообщение, пока инструмент не подтвердил это."
         )
         category = {"creator": "админ", "admin": "админ", "friend": "друг"}.get(user_row.get("status"), "стандарт")
+        creator_note = (
+            " Это Создатель проекта: обращайся с уважением и вниманием, но без заискивания — уважение задаётся настройкой, а не обожанием."
+            if is_admin else ""
+        )
         category_rules = {
             "стандарт": "Холодно, кратко и строго по делу.",
             "друг": "Живо и с юмором, но с характером и границами.",
             "админ": "Дружелюбно и внимательно; главный админ — Создатель.",
         }[category]
+        category_rules += creator_note
         system_prompt = (
             f"{self.personality.get_prompt()}\n\n"
             f"=== ВРЕМЯ ===\n{time_info}\n\n"
