@@ -285,7 +285,7 @@ async def handle_edit_mode(event, text: str) -> bool:
         await db.set_kv("maintenance_restart", "true")
         await tools.update_my_profile(first_name=config.MAINTENANCE_NAME)
         await event.reply("Включаю режим технических работ и останавливаюсь.")
-        asyncio.create_task(client.disconnect())
+        client.disconnect()
         return True
     if command == "уважение" and len(parts) == 3:
         try:
@@ -636,8 +636,14 @@ def acquire_instance_lock():
 
 async def main():
     acquire_instance_lock()
+    logger.info("Процесс Ады запущен; инициализация базы данных")
     await db.init()
-    
+    logger.info(
+        "Проверка LLM: provider=%s model=%s timeout=%ss",
+        config.LLM_PROVIDER,
+        config.ACTIVE_LLM_MODEL,
+        config.LLM_STARTUP_TIMEOUT_SECONDS,
+    )
     if not await agent.verify_connection():
         logger.warning("LLM недоступен. Telegram запустится в режиме без генерации до восстановления API.")
 

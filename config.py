@@ -26,6 +26,8 @@ GEMINI_BASE_URL=https://generativelanguage.googleapis.com/v1beta/openai/
 LLM_API_KEY=
 LLM_BASE_URL=https://api.openai.com/v1
 LLM_MODEL=gpt-4o-mini
+LLM_TIMEOUT_SECONDS=45
+LLM_STARTUP_TIMEOUT_SECONDS=12
 
 # Настройки автономности
 AUTONOMY_ENABLED=true
@@ -97,6 +99,8 @@ GEMINI_BASE_URL = os.getenv(
 LLM_BASE_URL = os.getenv("LLM_BASE_URL", "https://api.openai.com/v1").strip()
 LLM_API_KEY = os.getenv("LLM_API_KEY", "").strip()
 LLM_MODEL = os.getenv("LLM_MODEL", "gpt-4o-mini").strip()
+LLM_TIMEOUT_SECONDS = max(5, int(os.getenv("LLM_TIMEOUT_SECONDS", "45")))
+LLM_STARTUP_TIMEOUT_SECONDS = max(3, int(os.getenv("LLM_STARTUP_TIMEOUT_SECONDS", "12")))
 
 if LLM_PROVIDER not in {"gemini", "openai_compatible"}:
     raise ValueError("LLM_PROVIDER должен быть gemini или openai_compatible")

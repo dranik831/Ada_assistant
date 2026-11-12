@@ -1,7 +1,7 @@
 import os
 import json
 import logging
-from openai import AsyncOpenAI
+from openai import AsyncOpenAI, APIConnectionError, APITimeoutError, APIStatusError, RateLimitError
 from tools import AgentTools
 import config
 
@@ -26,8 +26,18 @@ class UniversalAgent:
         self.client = AsyncOpenAI(
             base_url=self.base_url,
             api_key=self.api_key,
-            default_headers=default_headers
+            default_headers=default_headers,
+            timeout=config.LLM_TIMEOUT_SECONDS,
+            max_retries=0,
         )
+        self.fallback_client = None
+        if self.provider == "openai_compatible" and config.GEMINI_API_KEY:
+            self.fallback_client = AsyncOpenAI(
+                base_url=config.GEMINI_BASE_URL,
+                api_key=config.GEMINI_API_KEY,
+                timeout=config.LLM_TIMEOUT_SECONDS,
+                max_retries=0,
+            )
 
         self.tool_functions = {
             "list_my_capabilities": self.tools.list_my_capabilities,
@@ -69,17 +79,28 @@ class UniversalAgent:
         }
 
 
+    async def _completion(self, *, startup=False, **kwargs):
+        client = self.client.with_options(timeout=config.LLM_STARTUP_TIMEOUT_SECONDS) if startup else self.client
+        try:
+            return await client.chat.completions.create(model=self.model_name, **kwargs)
+        except (APIConnectionError, APITimeoutError, RateLimitError, APIStatusError) as exc:
+            if not self.fallback_client or (isinstance(exc, APIStatusError) and exc.status_code < 500 and exc.status_code != 429):
+                raise
+            logger.warning("Основная LLM недоступна (%s); переключаюсь на Gemini %s", type(exc).__name__, config.GEMINI_MODEL)
+            fallback = (
+                self.fallback_client.with_options(timeout=config.LLM_STARTUP_TIMEOUT_SECONDS)
+                if startup else self.fallback_client
+            )
+            return await fallback.chat.completions.create(model=config.GEMINI_MODEL, **kwargs)
+
     async def verify_connection(self) -> bool:
         try:
-            resp = await self.client.chat.completions.create(
-                model=self.model_name,
+            resp = await self._completion(
+                startup=True,
                 messages=[{"role": "user", "content": "ping"}],
                 max_tokens=5
             )
-            logger.info(
-                "LLM API успешно подключен: provider=%s url=%s model=%s",
-                self.provider, self.base_url, self.model_name,
-            )
+            logger.info("LLM API успешно ответил: model=%s", resp.model)
             return True
         except Exception as e:
             logger.error(f"Сбой подключения к LLM API ({self.base_url}): {e}")
@@ -259,9 +280,9 @@ class UniversalAgent:
             action("delete_calendar_event", "Удалить встречу по ID.", {"event_id": {"type": "integer"}}, ["event_id"]),
             action("create_meeting_request", "Сохранить запрос на встречу, не подтверждая её.", {"requester_id": {"type": "integer"}, "requester_name": {"type": "string"}, "purpose": {"type": "string"}, "preferred_time": {"type": "string"}}, ["requester_id", "requester_name", "purpose"]),
             action("list_meeting_requests", "Показать владельцу необработанные запросы на встречу.", {}, []),
-            action("set_person_category", "Изменить категорию человека по явной просьбе владельца.", {"user_id": {"type": "integer"}, "category": {"type": "string"}}, ["user_id", "category"]),
-            action("set_person_respect", "Изменить уважение по явной просьбе владельца.", {"user_id": {"type": "integer"}, "respect": {"type": "integer"}}, ["user_id", "respect"]),
-            action("set_mood", "Изменить состояние по явной просьбе владельца.", {"emotion": {"type": "string"}, "value": {"type": "integer"}}, ["emotion", "value"]),
+            action("set_person_category", "Самостоятельно изменить категорию текущего собеседника по устойчивому поведению; нельзя назначать админа или менять Создателя.", {"user_id": {"type": "integer"}, "category": {"type": "string"}}, ["user_id", "category"]),
+            action("set_person_respect", "Самостоятельно изменить уважение к текущему собеседнику (0..100) с учётом его поведения; Создатель неизменен.", {"user_id": {"type": "integer"}, "respect": {"type": "integer"}}, ["user_id", "respect"]),
+            action("set_mood", "Самостоятельно изменить собственную эмоцию (0..100) в ответ на ситуацию.", {"emotion": {"type": "string"}, "value": {"type": "integer"}}, ["emotion", "value"]),
         ])
         return specs
 
@@ -276,8 +297,7 @@ class UniversalAgent:
 
         for _ in range(max_steps):
             try:
-                response = await self.client.chat.completions.create(
-                    model=self.model_name,
+                response = await self._completion(
                     messages=messages,
                     tools=self._get_tools_spec(),
                     temperature=0.6
@@ -339,8 +359,7 @@ class UniversalAgent:
 
     async def summarize_dialog(self, text_chunk: str) -> str:
         try:
-            resp = await self.client.chat.completions.create(
-                model=self.model_name,
+            resp = await self._completion(
                 messages=[
                     {"role": "system", "content": "Выдели 2-3 ключевых факта из старого диалога. Только суть списком, без приветствий."},
                     {"role": "user", "content": text_chunk}
@@ -353,8 +372,7 @@ class UniversalAgent:
 
     async def compress_global_memories(self, memories_text: str) -> list:
         try:
-            resp = await self.client.chat.completions.create(
-                model=self.model_name,
+            resp = await self._completion(
                 messages=[
                     {"role": "system", "content": "Сожми воспоминания в JSON-массив: [{\"category\": \"тема\", \"content\": \"факт\"}]"},
                     {"role": "user", "content": memories_text}
