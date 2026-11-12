@@ -44,6 +44,10 @@ AUTONOMY_CHECK_INTERVAL=300
 AUTONOMY_SILENCE_MINUTES=45
 QUIET_HOURS_START=23
 QUIET_HOURS_END=8
+
+# Расписание УКРТБ (study.ukrtb.ru)
+UKRTB_GROUP_ID=
+UKRTB_GROUP_LABEL=
 """
 
 def init_environment():
@@ -124,6 +128,10 @@ AUTONOMY_CHECK_INTERVAL = int(os.getenv("AUTONOMY_CHECK_INTERVAL", "300"))
 AUTONOMY_SILENCE_MINUTES = int(os.getenv("AUTONOMY_SILENCE_MINUTES", "45"))
 QUIET_HOURS_START = int(os.getenv("QUIET_HOURS_START", "23"))
 QUIET_HOURS_END = int(os.getenv("QUIET_HOURS_END", "8"))
+
+# Учебный портал УКРТБ (study.ukrtb.ru): расписание занятий.
+UKRTB_GROUP_ID = os.getenv("UKRTB_GROUP_ID", "bf399ce2-089f-11f1-9b37-864d651ef868").strip()
+UKRTB_GROUP_LABEL = os.getenv("UKRTB_GROUP_LABEL", "ССА-17-26П").strip()
 
 DB_PATH = DATA_DIR / "ada.db"
 SESSION_PATH = DATA_DIR / "ada_userbot"
