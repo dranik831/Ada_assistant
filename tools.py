@@ -3,7 +3,7 @@ import subprocess
 import asyncio
 import logging
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
 from contextvars import ContextVar
 from pathlib import Path
 import aiohttp
@@ -16,6 +16,7 @@ from telethon.tl.types import User
 from telethon.tl.functions.account import UpdateProfileRequest
 from database import Database
 import config
+import schedule_api
 
 logger = logging.getLogger("Ada.Tools")
 
@@ -439,6 +440,60 @@ class AgentTools:
     async def list_tasks(self, owner_id: int = 0) -> str:
         rows = await self.db.list_tasks(owner_id or self._actor_context.get())
         return "\n".join(f"#{row['id']} {row['due_at']} — {row['description']}" for row in rows) or "Активных задач нет."
+
+    async def cancel_task(self, task_id: int) -> str:
+        if not self._is_admin():
+            return "Отменять напоминания может только Создатель."
+        cancelled = await self.db.cancel_task(int(task_id))
+        return "Напоминание отменено." if cancelled else "Задача не найдена или уже выполнена."
+
+    def _parse_schedule_date(self, when: str) -> str:
+        """Принимает ISO-дату, 'сегодня', 'завтра', 'послезавтра'; возвращает YYYY-MM-DD."""
+        value = (when or "").strip().lower()
+        today = datetime.now().date()
+        if value in {"", "сегодня", "today"}:
+            return today.isoformat()
+        if value in {"завтра", "tomorrow"}:
+            return (today + timedelta(days=1)).isoformat()
+        if value in {"послезавтра"}:
+            return (today + timedelta(days=2)).isoformat()
+        return datetime.fromisoformat(value).date().isoformat()
+
+    async def get_college_schedule(self, when: str = "", query: str = "") -> str:
+        """Расписание колледжа с учебного портала УКРТБ (только Создатель)."""
+        if not self._is_admin():
+            return "Расписание колледжа доступно только Создателю."
+        try:
+            target_date = self._parse_schedule_date(when)
+        except ValueError:
+            return "Неверная дата. Форматы: 'сегодня', 'завтра' или 2026-11-13."
+        list_type = "groups"
+        target = query or config.UKRTB_GROUP_ID or config.UKRTB_GROUP_LABEL
+        if query:
+            lowered = query.lower()
+            if any(word in lowered for word in ("преподав", "учитель")):
+                list_type = "teachers"
+            elif any(word in lowered for word in ("аудитор", "кабинет")):
+                list_type = "audiences"
+        data = await schedule_api.get_schedule(target, target_date, list_type=list_type)
+        if not data:
+            cached = schedule_api.get_cached_schedule()
+            if cached and not query and (cached.get("date", {}).get("date") or "").startswith(
+                datetime.strptime(target_date, "%Y-%m-%d").strftime("%d ")
+            ):
+                return schedule_api.format_schedule(cached, target_date) + "\n(из кэша: сайт недоступен)"
+            return "Не удалось получить расписание: группа не найдена или сайт недоступен."
+        return schedule_api.format_schedule(data, target_date)
+
+    async def refresh_my_schedule_cache(self) -> str:
+        """Обновляет локальный кэш расписания настроенной группы УКРТБ."""
+        if not self._is_admin():
+            return "Обновлять кэш расписания может только Создатель."
+        data = await schedule_api.get_my_schedule()
+        if not data:
+            return "Сайт УКРТБ недоступен или группа не найдена."
+        return "Кэш расписания обновлён:\n" + schedule_api.format_schedule(data)[:3500]
+
 
     async def create_meeting_request(self, requester_id: int, requester_name: str, purpose: str,
                                     preferred_time: str = "") -> str:

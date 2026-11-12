@@ -226,6 +226,9 @@ async def edit_menu(event) -> None:
         "• календарь удалить <id> — удалить встречу\n"
         "• расписание импорт <JSON> — загрузить расписание\n"
         "• расписание показать — посмотреть загруженное расписание\n"
+        "• расписание сегодня|завтра — расписание УКРТБ с сайта\n"
+        "• расписание обновить — обновить кэш расписания УКРТБ\n"
+        "• задача отменить <id> — отменить напоминание\n"
         "• задачи — список напоминаний\n"
         "• запросы — запросы на встречи\n"
         "• техработы — включить служебное имя и остановить\n"
@@ -335,8 +338,21 @@ async def handle_edit_mode(event, text: str) -> bool:
     if command == "расписание" and len(parts) >= 2 and parts[1].lower() == "показать":
         await event.reply(await tools.read_schedule())
         return True
-    if command == "расписание" and len(parts) >= 3 and parts[1].lower() == "импорт":
+    if command == "расписание" and len(parts) >= 2 and parts[1].lower() == "импорт":
         await event.reply(await tools.import_schedule_json(parts[2]))
+        return True
+    if command == "расписание" and len(parts) >= 2 and parts[1].lower() == "обновить":
+        await event.reply(await tools.refresh_my_schedule_cache())
+        return True
+    if command == "расписание" and len(parts) >= 2 and parts[1].lower() in {"сегодня", "завтра", "укртб"}:
+        when = "сегодня" if parts[1].lower() == "сегодня" else ("завтра" if parts[1].lower() == "завтра" else "")
+        await event.reply(await tools.get_college_schedule(when))
+        return True
+    if command == "задача" and len(parts) == 3 and parts[1].lower() == "отменить":
+        try:
+            await event.reply(await tools.cancel_task(int(parts[2])))
+        except ValueError:
+            await event.reply("Формат: задача отменить <id>")
         return True
     if command == "задачи":
         await event.reply(await tools.list_tasks(config.ADMIN_USER_ID))
