@@ -327,15 +327,19 @@ class AgentTools:
         ) or "Подтверждённых совпадений в памяти не найдено."
 
 
-    async def create_reminder(self, owner_id: int, description: str, due_at: str, chat_id: int = 0) -> str:
+    async def create_reminder(self, owner_id: int, description: str, due_at: str,
+                              chat_id: int = 0, repeat_rule: str = "") -> str:
         if not self._is_admin() or int(owner_id) != config.ADMIN_USER_ID:
             return "Создавать напоминания в личном календаре может только Создатель."
         try:
             datetime.fromisoformat(due_at)
         except ValueError:
             return "Неверная дата. Используй ISO-формат: 2026-11-08T15:00:00"
-        task_id = await self.db.create_task(owner_id, description, due_at, chat_id or None)
-        return f"Напоминание создано, ID={task_id}, время={due_at}."
+        safe_repeat = repeat_rule.strip().lower() if repeat_rule else ""
+        if safe_repeat not in {"", "daily", "weekly", "weekdays"}:
+            return "repeat_rule может быть: daily, weekly, weekdays или пусто (одноразово)."
+        task_id = await self.db.create_task(owner_id, description, due_at, chat_id or None, repeat_rule=safe_repeat)
+        return f"Напоминание создано, ID={task_id}, время={due_at}" + (f", повтор: {safe_repeat}" if safe_repeat else "") + "."
 
 
     async def set_person_category(self, user_id: int, category: str) -> str:

@@ -155,7 +155,37 @@ class Database:
                     created_at TEXT DEFAULT CURRENT_TIMESTAMP
                 );
             """)
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS memory_history (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    memory_id INTEGER,
+                    action TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    actor TEXT DEFAULT '',
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+                );
+            """)
             await db.commit()
+            await self._migrate_legacy_memory()
+
+    async def _migrate_legacy_memory(self):
+        """Разовый перенос legacy global_memories в memory_items (scope=global)."""
+        migrated = await self.get_kv("legacy_memory_migrated", "false")
+        if migrated == "true":
+            return
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute("SELECT COUNT(*) FROM global_memories")
+            count = (await cursor.fetchone() or (0,))[0]
+            if count:
+                await db.execute("""
+                    INSERT INTO memory_items(scope, owner_id, chat_id, category, content,
+                        importance, confidence, source)
+                    SELECT 'global', NULL, NULL, category, content, importance, 0.8, 'legacy_migration'
+                    FROM global_memories
+                """)
+                await db.execute("DELETE FROM global_memories")
+                await db.commit()
+            await self.set_kv("legacy_memory_migrated", "true")
 
     async def get_kv(self, key: str, default=None):
         async with aiosqlite.connect(self.db_path) as db:
@@ -290,29 +320,33 @@ class Database:
             await db.commit()
 
     async def add_memory(self, category: str, content: str, importance: int = 5):
-        now_str = datetime.now().isoformat()
-        async with aiosqlite.connect(self.db_path) as db:
-            await db.execute(
-                "INSERT INTO global_memories (category, content, importance, timestamp) VALUES (?, ?, ?, ?)",
-                (category[:80], content[:4000], max(0, min(10, int(importance))), now_str),
-            )
-            await db.commit()
+        """Глобальная память: пишется сразу в новую таблицу memory_items."""
+        await self.add_scoped_memory(
+            "global", content, category=category,
+            importance=max(0, min(10, int(importance))), confidence=0.9,
+            source="legacy_add_memory",
+        )
 
     async def get_all_memories(self) -> list:
+        """Глобальные факты из memory_items (после миграции legacy там же)."""
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
-            cursor = await db.execute("SELECT id, category, content, importance FROM global_memories ORDER BY id ASC")
+            cursor = await db.execute(
+                "SELECT id, category, content, importance FROM memory_items WHERE scope='global' ORDER BY id ASC"
+            )
             return [dict(r) for r in await cursor.fetchall()]
 
     async def rewrite_memories(self, compressed_items: list):
         async with aiosqlite.connect(self.db_path) as db:
-            await db.execute("DELETE FROM global_memories")
+            await db.execute("DELETE FROM memory_items WHERE scope='global'")
             now_str = datetime.now().isoformat()
             for item in compressed_items:
                 await db.execute("""
-                    INSERT INTO global_memories (category, content, importance, timestamp)
-                    VALUES (?, ?, ?, ?)
-                """, (item.get("category", "summary"), item.get("content", ""), item.get("importance", 5), now_str))
+                    INSERT INTO memory_items(scope, owner_id, chat_id, category, content,
+                        importance, confidence, source, created_at)
+                    VALUES ('global', NULL, NULL, ?, ?, ?, 0.9, 'compression', ?)
+                """, (item.get("category", "summary"), item.get("content", ""),
+                      item.get("importance", 5), now_str))
             await db.commit()
 
     async def log_brain_action(self, user_id: int, reasoning: str, before: dict, after: dict, actions: list):
@@ -360,6 +394,7 @@ class Database:
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute("DELETE FROM global_memories")
             await db.execute("DELETE FROM memory_items")
+            await db.execute("DELETE FROM memory_history")
             await db.execute("DELETE FROM brain_logs")
             await db.execute("DELETE FROM messages")
             await db.execute("DELETE FROM telegram_events")
@@ -387,17 +422,53 @@ class Database:
                 cursor = await db.execute("SELECT * FROM tasks WHERE status='pending' AND owner_id=? ORDER BY due_at LIMIT ?", (owner_id, limit))
             return [dict(row) for row in await cursor.fetchall()]
 
+    async def _log_memory_history(self, db, memory_id: int, action: str, content: str, actor: str = ""):
+        await db.execute(
+            "INSERT INTO memory_history(memory_id, action, content, actor) VALUES (?, ?, ?, ?)",
+            (memory_id, action, content[:4000], actor[:200]),
+        )
+
     async def add_scoped_memory(self, scope: str, content: str, category: str = "fact",
                                 owner_id: int | None = None, chat_id: int | None = None,
                                 importance: int = 5, confidence: float = 1.0,
-                                source: str = ""):
+                                source: str = "", expires_at: str | None = None):
         async with aiosqlite.connect(self.db_path) as db:
-            await db.execute("""
+            # Версионирование: находим активный факт в той же области с сильным
+            # пересечением токенов. Другой текст => старый помечается superseded.
+            similar_id, similar_content = None, None
+            cursor = await db.execute("""
+                SELECT id, content FROM memory_items
+                WHERE scope = ? AND category = ?
+                  AND (owner_id IS ? OR owner_id = ?)
+                  AND (chat_id IS ? OR chat_id = ?)
+                  AND (expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP)
+                ORDER BY created_at DESC LIMIT 50
+            """, (scope, category, owner_id, owner_id, chat_id, chat_id))
+            import re as _re
+            new_tokens = {t.lower() for t in _re.findall(r"[\w-]{4,}", content)}
+            for row in await cursor.fetchall():
+                old_tokens = {t.lower() for t in _re.findall(r"[\w-]{4,}", row[1])}
+                if new_tokens and old_tokens:
+                    overlap = len(new_tokens & old_tokens) / min(len(new_tokens), len(old_tokens))
+                    if overlap >= 0.7:
+                        similar_id, similar_content = row[0], row[1]
+                        break
+            if similar_id is not None and similar_content != content:
+                await db.execute(
+                    "UPDATE memory_items SET confidence = 0.0, source = source || ' | superseded' WHERE id = ?",
+                    (similar_id,),
+                )
+                await self._log_memory_history(db, similar_id, "superseded", similar_content, source)
+
+            cursor = await db.execute("""
                 INSERT INTO memory_items(scope, owner_id, chat_id, category, content,
-                    importance, confidence, source)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    importance, confidence, source, expires_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (scope, owner_id, chat_id, category, content[:4000],
-                   max(0, min(10, int(importance))), max(0.0, min(1.0, float(confidence))), source[:200]))
+                  max(0, min(10, int(importance))), max(0.0, min(1.0, float(confidence))), source[:200],
+                  expires_at))
+            memory_id = cursor.lastrowid
+            await self._log_memory_history(db, memory_id, "created", content, source)
             await db.commit()
 
     async def search_scoped_memories(self, query: str, owner_id: int | None = None,
@@ -456,8 +527,26 @@ class Database:
     async def delete_scoped_memory(self, memory_id: int):
 
         async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute("SELECT content FROM memory_items WHERE id = ?", (memory_id,))
+            row = await cursor.fetchone()
+            if row:
+                await self._log_memory_history(db, memory_id, "deleted", row[0], "manual_delete")
             await db.execute("DELETE FROM memory_items WHERE id = ?", (memory_id,))
             await db.commit()
+
+    async def get_memory_history(self, memory_id: int | None = None, limit: int = 30) -> list:
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            if memory_id is None:
+                cursor = await db.execute(
+                    "SELECT * FROM memory_history ORDER BY id DESC LIMIT ?", (limit,)
+                )
+            else:
+                cursor = await db.execute(
+                    "SELECT * FROM memory_history WHERE memory_id = ? ORDER BY id DESC LIMIT ?",
+                    (memory_id, limit),
+                )
+            return [dict(row) for row in await cursor.fetchall()]
 
     async def upsert_chat(self, chat_id: int, title: str, kind: str):
         async with aiosqlite.connect(self.db_path) as db:
@@ -513,6 +602,24 @@ class Database:
     async def complete_task(self, task_id: int):
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute("UPDATE tasks SET status='completed', completed_at=CURRENT_TIMESTAMP WHERE id=?", (task_id,))
+            await db.commit()
+
+    async def cancel_task(self, task_id: int) -> bool:
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute(
+                "UPDATE tasks SET status='cancelled', completed_at=CURRENT_TIMESTAMP WHERE id=? AND status='pending'",
+                (task_id,),
+            )
+            await db.commit()
+            return bool(cursor.rowcount)
+
+    async def reschedule_task(self, task_id: int, next_due: str):
+        """Переносит повторяющуюся задачу на следующее время."""
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                "UPDATE tasks SET due_at = ?, status = 'pending', completed_at = NULL WHERE id = ?",
+                (next_due, task_id),
+            )
             await db.commit()
 
     async def delete_memory(self, memory_id: int):

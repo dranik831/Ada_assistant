@@ -274,7 +274,7 @@ class UniversalAgent:
             action("get_chat_info", "Получить информацию о чате.", {"target": {"type": "string"}}, ["target"]),
 
             action("search_scoped_memory", "Искать в контекстной памяти.", {"query": {"type": "string"}, "owner_id": {"type": "integer"}, "chat_id": {"type": "integer"}}, ["query"]),
-            action("create_reminder", "Создать напоминание в ISO-времени.", {"owner_id": {"type": "integer"}, "description": {"type": "string"}, "due_at": {"type": "string"}, "chat_id": {"type": "integer"}}, ["owner_id", "description", "due_at"]),
+            action("create_reminder", "Создать напоминание в ISO-времени; repeat_rule — daily, weekly или weekdays для повторяющихся.", {"owner_id": {"type": "integer"}, "description": {"type": "string"}, "due_at": {"type": "string"}, "chat_id": {"type": "integer"}, "repeat_rule": {"type": "string"}}, ["owner_id", "description", "due_at"]),
             action("add_calendar_event", "Добавить событие в календарь владельца.", {"owner_id": {"type": "integer"}, "title": {"type": "string"}, "start_at": {"type": "string"}, "end_at": {"type": "string"}, "details": {"type": "string"}}, ["owner_id", "title", "start_at"]),
             action("list_calendar_events", "Показать события календаря.", {"from_at": {"type": "string"}, "to_at": {"type": "string"}}, []),
             action("import_schedule_json", "Импортировать расписание из JSON.", {"content": {"type": "string"}}, ["content"]),

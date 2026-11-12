@@ -6,7 +6,7 @@ import re
 import json
 import random
 from collections import defaultdict
-from telethon import TelegramClient, events
+from telethon import TelegramClient, events, errors
 from telethon.tl.types import User, Channel, Chat
 from telethon.network.connection import ConnectionTcpMTProxyRandomizedIntermediate
 
@@ -49,12 +49,7 @@ agent = UniversalAgent(tools)
 brain = Brain(db, emotions, personality, agent)
 
 async def send_user_message(target_id: int, text: str):
-    try:
-        async with client.action(target_id, 'typing'):
-            await asyncio.sleep(min(3.0, max(1.0, len(text) * 0.02)))
-        await client.send_message(target_id, text)
-    except Exception as e:
-        logger.error(f"Не удалось отправить сообщение {target_id}: {e}")
+    enqueue_message(target_id, text)
 
 autonomy = AutonomyEngine(db, brain, emotions, send_user_message)
 _instance_lock_file = None
@@ -65,6 +60,44 @@ _message_locks = defaultdict(asyncio.Lock)
 _group_last_reply: dict[int, float] = {}
 _group_batches: dict[int, dict] = {}
 _group_batch_locks = defaultdict(asyncio.Lock)
+_chat_processing_locks = defaultdict(asyncio.Lock)
+
+# Исходящая очередь: все отправки вне обработчиков событий идут через один
+# воркер, чтобы разом обрабатывать FloodWait и не плодить параллельные запросы.
+_outgoing_queue: asyncio.Queue = asyncio.Queue(maxsize=200)
+
+async def outgoing_worker():
+    while True:
+        item = await _outgoing_queue.get()
+        try:
+            await client.send_message(item["chat_id"], item["text"])
+            await db.save_message(0, "ada", item["text"], chat_id=item["chat_id"])
+        except errors.FloodWaitError as flood:
+            logger.warning("FloodWait %ss перед отправкой в %s", flood.seconds, item["chat_id"])
+            await asyncio.sleep(flood.seconds + 1)
+            try:
+                await client.send_message(item["chat_id"], item["text"])
+            except Exception as retry_error:
+                logger.error("Повторная отправка в %s не удалась: %s", item["chat_id"], retry_error)
+        except Exception as e:
+            logger.error("Ошибка исходящей отправки в %s: %s", item["chat_id"], e)
+        finally:
+            _outgoing_queue.task_done()
+
+def enqueue_message(chat_id: int, text: str):
+    try:
+        _outgoing_queue.put_nowait({"chat_id": chat_id, "text": text[:4096]})
+    except asyncio.QueueFull:
+        logger.error("Исходящая очередь переполнена; сообщение в %s потеряно", chat_id)
+
+async def send_with_flood_wait(coro_factory):
+    """Выполняет отправку, выдерживая FloodWait один раз."""
+    try:
+        return await coro_factory()
+    except errors.FloodWaitError as flood:
+        logger.warning("FloodWait %ss; жду и повторяю", flood.seconds)
+        await asyncio.sleep(flood.seconds + 1)
+        return await coro_factory()
 
 async def collect_message(event, sender_id: int, text: str) -> str | None:
     """Объединяет быстрые сообщения одного автора в одну реплику."""
@@ -216,7 +249,9 @@ async def edit_menu(event) -> None:
         "• память добавить личное|группа|global <текст> — добавить точный факт\n"
 
         "• память удалить <id> — удалить факт\n"
+        "• память история — журнал изменений фактов\n"
         "• память очистить — очистить историю и память\n"
+        "• правило <chat_id> <текст> — локальное правило группы\n"
         "• уважение <id> <0..100> — изменить уважение\n"
         "• категория <id> стандарт|друг|админ — изменить категорию\n"
         "• роль добавить <id> стандарт|друг — назначить роль (админа только владелец в конфиге)\n"
@@ -360,6 +395,23 @@ async def handle_edit_mode(event, text: str) -> bool:
     if command == "запросы":
         await event.reply(await tools.list_meeting_requests())
         return True
+    if command == "правило":
+        if len(parts) >= 3 and parts[1].lstrip("-").isdigit():
+            await db.update_chat_context(int(parts[1]), rules=parts[2])
+            await event.reply(f"Правило чата {parts[1]} сохранено.")
+        elif len(parts) == 3 and parts[1].lower() == "показать" and parts[2].lstrip("-").isdigit():
+            chat_row = await db.get_chat(int(parts[2]))
+            await event.reply(f"Правила чата {parts[2]}:\n{(chat_row or {}).get('rules') or 'не заданы'}")
+        else:
+            await event.reply("Формат: правило <chat_id> <текст правила>")
+        return True
+    if command == "память" and len(parts) == 2 and parts[1].lower() == "история":
+        history = await db.get_memory_history(limit=25)
+        text_out = "\n".join(
+            f"#{h['memory_id']} [{h['action']}] {h['content'][:120]}" for h in history
+        )
+        await event.reply(text_out[:3900] or "История памяти пуста.")
+        return True
     if command == "память" and len(parts) == 2 and parts[1].lower() == "очистить":
         await db.clear_memory()
         await event.reply("Память, история и журналы очищены.")
@@ -367,13 +419,10 @@ async def handle_edit_mode(event, text: str) -> bool:
     if command == "память":
         if len(parts) == 1:
             memories = await db.list_scoped_memories(60)
-            legacy = await db.get_all_memories()
             text_out = "\n".join(
                 f"#{m['id']} [{m['scope']}/{m['category']}; {m['confidence']:.2f}] {m['content']}"
                 for m in memories
             )
-            if legacy:
-                text_out += "\n" + "\n".join(f"legacy#{m['id']} [{m['category']}] {m['content']}" for m in legacy[-20:])
             await event.reply(text_out[:3900] or "Память пуста.")
 
         elif len(parts) == 4 and parts[1].lower() == "добавить":
@@ -571,15 +620,16 @@ async def on_incoming_message(event):
         r"\b(запомни|сохрани в память|запиши в память|запомнить|измени уважение|поменяй уважение|назначь категорию|поменяй категорию|измени категорию|измени настроение|поменяй настроение)\b",
         text.lower(),
     ))
-    async with client.action(chat_id, 'typing'):
-        decision = await brain.process_interaction(
-            sender.id,
-            text,
-            is_admin,
-            chat_context,
-            chat_id=event.chat_id,
-            allow_memory_write=explicit_memory_request,
-        )
+    async with _chat_processing_locks[chat_id]:
+        async with client.action(chat_id, 'typing'):
+            decision = await brain.process_interaction(
+                sender.id,
+                text,
+                is_admin,
+                chat_context,
+                chat_id=event.chat_id,
+                allow_memory_write=explicit_memory_request,
+            )
 
 
     reply_messages = decision.get("messages") or (
@@ -592,7 +642,7 @@ async def on_incoming_message(event):
             if not reply_text:
                 continue
             await asyncio.sleep(min(2.5, max(0.6, len(reply_text) * 0.02)))
-            await event.reply(reply_text)
+            await send_with_flood_wait(lambda rt=reply_text: event.reply(rt))
             await db.save_message(0, "ada", reply_text, chat_id=event.chat_id)
 
 @client.on(events.MessageEdited(incoming=True))
@@ -665,6 +715,7 @@ async def main():
 
     print("[*] Подключение к Telegram...")
     await client.start(phone=config.TG_PHONE)
+    asyncio.create_task(outgoing_worker())
     me = await client.get_me()
     saved_profile_name = await db.get_kv("normal_profile_name")
     if not saved_profile_name:

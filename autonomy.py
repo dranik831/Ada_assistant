@@ -1,5 +1,5 @@
 import asyncio
-from datetime import datetime
+from datetime import datetime, timedelta
 import logging
 import random
 from pathlib import Path
@@ -9,6 +9,41 @@ from brain import Brain
 from emotions import EmotionSystem
 
 logger = logging.getLogger("Ada.Autonomy")
+
+
+def to_local_naive(value: datetime) -> datetime:
+    """Приводит дату с таймзоной к локальному времени без tzinfo."""
+    if value.tzinfo is not None:
+        return value.astimezone().replace(tzinfo=None)
+    return value
+
+
+def next_repeat_occurrence(due_at: datetime, rule: str) -> datetime:
+    """Следующее время для повторяющейся задачи (daily/weekly/weekdays)."""
+    rule = (rule or "").strip().lower()
+    base = due_at
+    if rule in {"daily", "ежедневно"}:
+        candidate = base + timedelta(days=1)
+    elif rule in {"weekly", "еженедельно"}:
+        candidate = base + timedelta(weeks=1)
+    elif rule in {"weekdays", "будни"}:
+        candidate = base + timedelta(days=1)
+        while candidate.weekday() >= 5:
+            candidate += timedelta(days=1)
+    else:
+        candidate = base + timedelta(days=1)
+    # Если время уже прошло из-за простоя, поднимаем до ближайшего будущего.
+    now = datetime.now()
+    while candidate <= now:
+        if rule in {"weekly", "еженедельно"}:
+            candidate += timedelta(weeks=1)
+        elif rule in {"weekdays", "будни"}:
+            candidate += timedelta(days=1)
+            while candidate.weekday() >= 5:
+                candidate += timedelta(days=1)
+        else:
+            candidate += timedelta(days=1)
+    return candidate
 
 class AutonomyEngine:
     def __init__(self, db: Database, brain: Brain, emotions: EmotionSystem, send_message_callback):
@@ -119,7 +154,7 @@ class AutonomyEngine:
             events = json.loads(CALENDAR_FILE.read_text(encoding="utf-8"))
             now = datetime.now()
             for item in events:
-                start = datetime.fromisoformat(item["start_at"])
+                start = to_local_naive(datetime.fromisoformat(item["start_at"]))
                 delta = (start - now).total_seconds()
                 marker = f"{item.get('id')}:{item.get('start_at')}"
                 if 0 <= delta <= 15 * 60 and marker != self._last_calendar_notice:
@@ -131,11 +166,21 @@ class AutonomyEngine:
     async def _deliver_due_tasks(self):
 
         now = datetime.now().isoformat(timespec="seconds")
+        now_dt = datetime.now()
         for task in await self.db.get_due_tasks(now):
             try:
                 text = f"Напоминание: {task['description']}"
                 await self.send_message(task["chat_id"] or task["owner_id"], text)
                 await self.db.save_message(0, "ada", text, chat_id=task["chat_id"])
+                repeat_rule = (task.get("repeat_rule") or "").strip()
+                if repeat_rule:
+                    try:
+                        due = datetime.fromisoformat(task["due_at"])
+                        next_due = next_repeat_occurrence(due, repeat_rule)
+                        await self.db.reschedule_task(task["id"], next_due.isoformat(timespec="seconds"))
+                        continue
+                    except ValueError:
+                        pass
                 await self.db.complete_task(task["id"])
             except Exception:
                 logger.exception("Не удалось доставить напоминание %s", task["id"])

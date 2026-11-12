@@ -67,6 +67,17 @@ class Brain:
 
         time_info = self._get_time_context(user_row.get("last_interaction"))
         respect_val = int(user_row.get("respect", 50))
+        chat_rules_block = ""
+        if is_group:
+            chat_row = await self.db.get_chat(chat_id) or {}
+            rules = (chat_row.get("rules") or "").strip()
+            summary = (chat_row.get("context_summary") or "").strip()
+            if rules or summary:
+                chat_rules_block = (
+                    "\n\n=== ЛОКАЛЬНЫЕ ПРАВИЛА И ТЕМЫ ЧАТА ===\n"
+                    + (f"Правила группы: {rules[:1500]}\n" if rules else "")
+                    + (f"Последние темы обсуждения: {summary[:1500]}" if summary else "")
+                )
         secretary_rules = (
             "Ты также секретарь Драника. При первом обращении нового человека поздоровайся: "
             "«Здравствуйте, я секретарь Драника. Чтобы занять время встречи с ним или передать ему что-то, напишите мне». "
@@ -90,7 +101,7 @@ class Brain:
             f"Категория: {category}; правило: {category_rules}\n"
             f"Уважение: {respect_val}/100; доверие: {user_row.get('trust', 0)}/100; симпатия: {user_row.get('affection', 0)}/100\n"
             f"Создатель: {'ДА' if is_admin else 'НЕТ'}\n"
-            f"Секретарский режим: {secretary_rules}\n\n"
+            f"Секретарский режим: {secretary_rules}{chat_rules_block}\n\n"
             f"=== ЭМОЦИИ ===\n{json.dumps(current_emotions, ensure_ascii=False)}\n\n"
             f"=== ПОДТВЕРЖДЁННАЯ ПАМЯТЬ ПО ТЕМЕ ===\n{mem_text or 'Нет подтверждённых фактов по теме.'}\n\n"
             "СТРОГАЯ ДОСТОВЕРНОСТЬ:\n"
