@@ -99,6 +99,16 @@ async def send_with_flood_wait(coro_factory):
         await asyncio.sleep(flood.seconds + 1)
         return await coro_factory()
 
+# Маркеры осознанного молчания: такие части ответа не отправляются в чат.
+_SILENCE_RE = re.compile(r"^\s*(SILENCE|NO_REPLY|МОЛЧУ|МОЛЧАНИЕ)\s*$", re.IGNORECASE)
+
+def filter_silent_messages(messages) -> list:
+    """Убирает маркеры молчания; пустой результат = Ада решает промолчать."""
+    return [
+        part for part in (messages or [])
+        if part and not _SILENCE_RE.match(str(part))
+    ]
+
 async def collect_message(event, sender_id: int, text: str) -> str | None:
     """Объединяет быстрые сообщения одного автора в одну реплику."""
     key = (event.chat_id, sender_id)
@@ -635,6 +645,10 @@ async def on_incoming_message(event):
     reply_messages = decision.get("messages") or (
         [decision.get("reply")] if decision.get("reply") else []
     )
+    reply_messages = filter_silent_messages(reply_messages)
+    if not reply_messages:
+        logger.info("Ада осознанно промолчала в чате %s", chat_id)
+        return
     if reply_messages:
         if not event.is_private:
             _group_last_reply[event.chat_id] = asyncio.get_running_loop().time()

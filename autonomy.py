@@ -2,6 +2,7 @@ import asyncio
 from datetime import datetime, timedelta
 import logging
 import random
+import re
 from pathlib import Path
 from config import AUTONOMY_ENABLED, AUTONOMY_CHECK_INTERVAL, AUTONOMY_SILENCE_MINUTES, QUIET_HOURS_START, QUIET_HOURS_END, CALENDAR_FILE, ADMIN_USER_ID
 from database import Database
@@ -9,6 +10,9 @@ from brain import Brain
 from emotions import EmotionSystem
 
 logger = logging.getLogger("Ada.Autonomy")
+
+# Маркер осознанного молчания: модель может отказаться писать первой.
+_SILENCE_RE = re.compile(r"^\s*(SILENCE|NO_REPLY|МОЛЧУ|МОЛЧАНИЕ)\s*$", re.IGNORECASE)
 
 
 def to_local_naive(value: datetime) -> datetime:
@@ -137,7 +141,7 @@ class AutonomyEngine:
                     )
                     messages = decision.get("messages") or [decision.get("reply", "")]
                     reply_text = "\n".join(part.strip() for part in messages if part).strip()
-                    if reply_text and reply_text.upper() != "NO_REPLY" and "NO_REPLY" not in reply_text.upper():
+                    if reply_text and not self._SILENCE_RE.match(reply_text) and "NO_REPLY" not in reply_text.upper():
                         logger.info("Автономное сообщение пользователю %s с категорией %s", user_id, status)
                         await self.send_message(user_id, reply_text)
                         await self.db.save_message(user_id, "ada", reply_text, chat_id=user_id)
