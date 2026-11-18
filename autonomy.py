@@ -135,12 +135,14 @@ class AutonomyEngine:
                         "[Служебная задача от системы, это НЕ сообщение собеседника] "
                         "Оцени, уместно ли самой начать короткий разговор с этим человеком. "
                         "Инициатива редкая и должна опираться на конкретную тему или повод из памяти/истории. "
-                        "Не выдумывай повод. Если естественной причины нет, верни только NO_REPLY."
+                        "Не выдумывай повод. Если естественной причины нет, верни must_reply: false."
                     )
                     decision = await self.brain.process_interaction(
                         user_id, prompt, is_admin=False, chat_id=user_id
                     )
-                    messages = decision.get("messages") or [decision.get("reply", "")]
+                    if decision.get("error") or not decision.get("must_reply", True):
+                        continue
+                    messages = decision.get("messages") or []
                     reply_text = "\n".join(part.strip() for part in messages if part).strip()
                     if reply_text and not _SILENCE_RE.match(reply_text) and "NO_REPLY" not in reply_text.upper():
                         logger.info("Автономное сообщение пользователю %s с категорией %s", user_id, status)

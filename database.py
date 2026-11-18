@@ -287,9 +287,11 @@ class Database:
     async def get_chat_messages(self, chat_id: int, limit: int = 10, exclude_ids=()) -> list:
         """Последние limit реплик чата в хронологическом порядке."""
         exclude_ids = [int(i) for i in exclude_ids or ()]
+        # Старые заглушки ошибок API («заминка с сетью») в контекст не попадают.
         query = """
             SELECT id, user_id, role, content, timestamp, sender_name, reply_to_text
             FROM messages WHERE chat_id = ?
+              AND NOT (role = 'ada' AND content = 'Прости, возникла заминка с сетью.')
         """
         params: list = [chat_id]
         if exclude_ids:

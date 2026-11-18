@@ -67,20 +67,22 @@ _chat_processing_locks = defaultdict(asyncio.Lock)
 # воркер, чтобы разом обрабатывать FloodWait и не плодить параллельные запросы.
 _outgoing_queue: asyncio.Queue = asyncio.Queue(maxsize=200)
 
+async def _send_queued(item: dict):
+    sent = await client.send_message(item["chat_id"], item["text"])
+    if item.get("save", True):
+        await db.save_message(0, "ada", item["text"], chat_id=item["chat_id"],
+                              sender_name="Ада", tg_message_id=getattr(sent, "id", None))
+
 async def outgoing_worker():
     while True:
         item = await _outgoing_queue.get()
         try:
-            sent = await client.send_message(item["chat_id"], item["text"])
-            await db.save_message(0, "ada", item["text"], chat_id=item["chat_id"],
-                                  sender_name="Ада", tg_message_id=getattr(sent, "id", None))
+            await _send_queued(item)
         except errors.FloodWaitError as flood:
             logger.warning("FloodWait %ss перед отправкой в %s", flood.seconds, item["chat_id"])
             await asyncio.sleep(flood.seconds + 1)
             try:
-                sent = await client.send_message(item["chat_id"], item["text"])
-                await db.save_message(0, "ada", item["text"], chat_id=item["chat_id"],
-                                      sender_name="Ада", tg_message_id=getattr(sent, "id", None))
+                await _send_queued(item)
             except Exception as retry_error:
                 logger.error("Повторная отправка в %s не удалась: %s", item["chat_id"], retry_error)
         except Exception as e:
@@ -88,11 +90,35 @@ async def outgoing_worker():
         finally:
             _outgoing_queue.task_done()
 
-def enqueue_message(chat_id: int, text: str):
+def enqueue_message(chat_id: int, text: str, save: bool = True):
+    """save=False — служебное сообщение, в историю диалога не попадает."""
     try:
-        _outgoing_queue.put_nowait({"chat_id": chat_id, "text": text[:4096]})
+        _outgoing_queue.put_nowait({"chat_id": chat_id, "text": text[:4096], "save": save})
     except asyncio.QueueFull:
         logger.error("Исходящая очередь переполнена; сообщение в %s потеряно", chat_id)
+
+_LLM_ERROR_NOTICE_INTERVAL = 300
+_last_llm_error_notice = 0.0
+
+async def notify_llm_error(error_text: str, chat_id: int | None, user_id: int):
+    """Сообщает Создателю в личку об ошибке LLM API; в контекст не сохраняется."""
+    global _last_llm_error_notice
+    now = asyncio.get_running_loop().time()
+    if _last_llm_error_notice and now - _last_llm_error_notice < _LLM_ERROR_NOTICE_INTERVAL:
+        return
+    admin_id = config.ADMIN_USER_ID or int(await db.get_kv("admin_id", "0") or 0)
+    if not admin_id:
+        return
+    _last_llm_error_notice = now
+    enqueue_message(
+        admin_id,
+        f"⚠️ Ошибка LLM API ({config.LLM_PROVIDER}/{config.ACTIVE_LLM_MODEL}).\n"
+        f"Чат: {chat_id}, собеседник: {user_id}. Ответ не отправлен.\n{error_text[:1500]}\n"
+        f"(следующее уведомление не раньше чем через {_LLM_ERROR_NOTICE_INTERVAL // 60} мин)",
+        save=False,
+    )
+
+brain.on_llm_error = notify_llm_error
 
 async def send_with_flood_wait(coro_factory):
     """Выполняет отправку, выдерживая FloodWait один раз."""
@@ -677,10 +703,10 @@ async def on_incoming_message(event):
             )
 
 
-    reply_messages = decision.get("messages") or (
-        [decision.get("reply")] if decision.get("reply") else []
-    )
-    reply_messages = filter_silent_messages(reply_messages)
+    if decision.get("error"):
+        logger.warning("Ответ в чат %s не отправлен из-за ошибки LLM", chat_id)
+        return
+    reply_messages = filter_silent_messages(decision.get("messages") or []) if decision.get("must_reply", True) else []
     if not reply_messages:
         logger.info("Ада осознанно промолчала в чате %s", chat_id)
         return

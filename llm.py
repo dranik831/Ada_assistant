@@ -1,6 +1,7 @@
 import os
 import json
 import logging
+import re
 from openai import AsyncOpenAI, APIConnectionError, APITimeoutError, APIStatusError, RateLimitError
 from tools import AgentTools
 import config
@@ -310,18 +311,23 @@ class UniversalAgent:
                 )
             except Exception as e:
                 logger.error(f"Ошибка LLM API: {e}")
-                return {"reply": "Прости, возникла заминка с сетью.", "actions": actions_taken}
+                # Текст ошибки не уходит в чат и не сохраняется в историю:
+                # вызывающий код сам решает, кого уведомить.
+                return {"must_reply": False, "reply": "", "messages": [], "actions": actions_taken,
+                        "error": f"{type(e).__name__}: {e}"}
 
             choice = response.choices[0]
             msg = choice.message
             messages.append(msg)
 
             if not msg.tool_calls:
-                reply = msg.content.strip() if msg.content else ""
+                raw = msg.content.strip() if msg.content else ""
+                must_reply, parts = self._parse_reply(raw)
                 return {
-                    "reply": reply,
-                    "messages": self._split_reply(reply),
-                    "actions": actions_taken
+                    "must_reply": must_reply,
+                    "reply": "\n".join(parts),
+                    "messages": parts,
+                    "actions": actions_taken,
                 }
 
             for tool_call in msg.tool_calls:
@@ -348,7 +354,40 @@ class UniversalAgent:
                 })
 
         fallback = "Я выполнила действия."
-        return {"reply": fallback, "messages": [fallback], "actions": actions_taken}
+        return {"must_reply": True, "reply": fallback, "messages": [fallback], "actions": actions_taken}
+
+    @staticmethod
+    def _parse_reply(text: str) -> tuple[bool, list[str]]:
+        """Разбирает финальный ответ {"must_reply": bool, "messages": [...]}.
+
+        Если модель ответила не JSON, текст считается обычным ответом (старый формат)."""
+        text = (text or "").strip()
+        if not text:
+            return False, []
+        candidate = text
+        if "```" in candidate:
+            candidate = re.sub(r"^```(?:json)?\s*|\s*```$", "", candidate.strip(), flags=re.I)
+        start, end = candidate.find("{"), candidate.rfind("}")
+        data = None
+        if start != -1 and end > start:
+            try:
+                data = json.loads(candidate[start:end + 1], strict=False)
+            except ValueError:
+                data = None
+        if not isinstance(data, dict) or not ({"must_reply", "messages"} & data.keys()):
+            parts = UniversalAgent._split_reply(text)
+            return bool(parts), parts
+
+        must_reply = data.get("must_reply", True)
+        if isinstance(must_reply, str):
+            must_reply = must_reply.strip().lower() not in {"false", "0", "no", "нет"}
+        raw_messages = data.get("messages", data.get("message", data.get("reply", [])))
+        if isinstance(raw_messages, str):
+            raw_messages = [raw_messages]
+        parts = [str(part).strip() for part in raw_messages or [] if str(part).strip()]
+        if not must_reply or not parts:
+            return False, []
+        return True, parts[:6]
 
     @staticmethod
     def _split_reply(text: str) -> list[str]:
@@ -357,7 +396,6 @@ class UniversalAgent:
         if not text:
             return []
         if "<MESSAGE>" in text and "</MESSAGE>" in text:
-            import re
             parts = [p.strip() for p in re.findall(r"<MESSAGE>(.*?)</MESSAGE>", text, re.S)]
             if parts:
                 return parts[:6]
