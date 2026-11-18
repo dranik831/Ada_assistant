@@ -1,31 +1,35 @@
-"""Локальное меню Ады (Windows): Ctrl+Alt+A открывает окно ввода, Enter отправляет запрос.
+"""Локальное меню Ады (Windows): Ctrl+Alt+A открывает поле ввода в левом верхнем углу.
 
-Окно без рамки, полупрозрачное, с акриловым размытием и скруглёнными углами (DWM).
-Ctrl+Alt+Space в окне — запись голоса: первое нажатие начинает, второе распознаёт речь в поле ввода.
-Ответ от Ады выводится всплывающим уведомлением в том же стиле.
+Enter отправляет запрос: окно плавно сжимается в квадратик со спиннером, а когда ответ готов,
+разворачивается и показывает его целиком. Ответ виден только здесь, в Telegram он не уходит.
+Ctrl+Alt+Space — запись голоса: первое нажатие начинает, второе распознаёт речь в поле ввода.
+Esc или клик мимо окна закрывает его.
 """
 import ctypes
 import ctypes.wintypes as wt
 import logging
+import math
 import queue
 import threading
 import tkinter as tk
-from tkinter import scrolledtext
+import tkinter.font as tkfont
 
 import voice
 
 logger = logging.getLogger("Ada.Overlay")
 
-_reply_callback = None
-
-MOD_CTRL, MOD_ALT, MOD_NOREPEAT = 0x2, 0x1, 0x4000
+MOD_ALT, MOD_CTRL, MOD_NOREPEAT = 0x1, 0x2, 0x4000
+VK_A = 0x41           # виртуальный код клавиши A: работает при любой раскладке
 WM_HOTKEY = 0x0312
-VK_A = 0x41
-WIDTH, HEIGHT = 680, 64
-BG = "#1b1d2b"        # тонировка окна
+MARGIN = 16           # отступ окна от левого верхнего угла экрана
+INPUT_W, INPUT_H = 680, 64
+BUSY = 56             # сторона квадратика с анимацией загрузки
+PAD = 18
+FG = "#f2f3ff"
 KEY = "#1c1e2c"       # цвет-ключ: эти пиксели прозрачны, сквозь них видно размытие
 TINT = 0x992b1d1b     # AABBGGRR для акрила: тёмно-синяя тонировка, ~60% непрозрачности
-PLACEHOLDER = "Спроси Аду…"
+
+_events: queue.Queue | None = None
 
 
 class _AccentPolicy(ctypes.Structure):
@@ -67,7 +71,6 @@ def _hotkey_loop(events: queue.Queue):
 
 
 def _ui_loop(events: queue.Queue, on_submit, transcribe):
-    global _reply_callback
     ctypes.windll.shcore.SetProcessDpiAwareness(1)  # иначе Windows растягивает окно и текст мылится
     root = tk.Tk()
     root.withdraw()
@@ -75,64 +78,53 @@ def _ui_loop(events: queue.Queue, on_submit, transcribe):
     root.attributes("-topmost", True)
     root.configure(bg=KEY)
     root.attributes("-transparentcolor", KEY)
-    x = (root.winfo_screenwidth() - WIDTH) // 2
-    root.geometry(f"{WIDTH}x{HEIGHT}+{x}+{root.winfo_screenheight() // 3}")
+    root.geometry(f"{INPUT_W}x{INPUT_H}+{MARGIN}+{MARGIN}")
 
-    entry = tk.Entry(root, font=("Segoe UI", 16), bg=KEY, fg="#f2f3ff", insertbackground="#f2f3ff",
+    font = tkfont.Font(family="Segoe UI", size=12)
+    entry = tk.Entry(root, font=("Segoe UI", 16), bg=KEY, fg=FG, insertbackground=FG,
                      disabledbackground=KEY, disabledforeground="#9aa0c0", relief="flat", bd=0,
                      highlightthickness=0)
+    spinner = tk.Canvas(root, width=BUSY, height=BUSY, bg=KEY, highlightthickness=0)
+    arc = spinner.create_arc(16, 16, BUSY - 16, BUSY - 16, start=0, extent=100, style="arc", outline=FG, width=3)
+    reply = tk.Text(root, font=font, bg=KEY, fg=FG, relief="flat", bd=0, highlightthickness=0,
+                    wrap="word", cursor="arrow", selectbackground="#4a4f7a")
+    widgets = (entry, spinner, reply)
     entry.pack(fill="both", expand=True, padx=22, pady=14)
     root.update_idletasks()
     hwnd = ctypes.windll.user32.GetParent(root.winfo_id())
     _apply_glass(hwnd)
 
-    # Окно уведомления с ответом
-    reply_win = tk.Toplevel(root)
-    reply_win.withdraw()
-    reply_win.overrideredirect(True)
-    reply_win.attributes("-topmost", True)
-    reply_win.configure(bg=KEY)
-    reply_win.attributes("-transparentcolor", KEY)
-
-    reply_text = scrolledtext.ScrolledText(reply_win, font=("Segoe UI", 12), bg=KEY, fg="#f2f3ff",
-                                          relief="flat", bd=0, highlightthickness=0, wrap="word",
-                                          padx=16, pady=12, state="disabled")
-    reply_text.pack(fill="both", expand=True)
-    reply_hwnd = ctypes.windll.user32.GetParent(reply_win.winfo_id())
-    _apply_glass(reply_hwnd)
-
     recorder = voice.Recorder()
-    state = {"visible": False, "reply_visible": False}
+    state = {"mode": "hidden", "anim": None, "angle": 0}  # mode: hidden | input | busy | reply
 
-    def show_reply_window(text: str):
-        reply_text.configure(state="normal")
-        reply_text.delete("1.0", "end")
-        reply_text.insert("1.0", text)
-        reply_text.configure(state="disabled")
+    def use(widget=None, **pack):
+        for w in widgets:
+            w.pack_forget()
+        if widget is not None:
+            widget.pack(fill="both", expand=True, **pack)
 
-        # Размер окна под контент (макс 600x400)
-        reply_win.update_idletasks()
-        lines = text.count("\n") + 1
-        height = min(400, max(120, lines * 20 + 40))
-        width = min(600, max(300, max(len(line) for line in text.split("\n")) * 8 + 40))
-        x = (root.winfo_screenwidth() - width) // 2
-        y = root.winfo_screenheight() // 4
-        reply_win.geometry(f"{width}x{height}+{x}+{y}")
+    def animate(width: int, height: int, done, steps: int = 14):
+        """Плавно меняет размер окна (угол остаётся на месте), потом вызывает done()."""
+        if state["anim"]:
+            root.after_cancel(state["anim"])
+        use()
+        w0, h0 = root.winfo_width(), root.winfo_height()
 
-        reply_win.deiconify()
-        reply_win.lift()
-        state["reply_visible"] = True
-        reply_win.after(8000, hide_reply)  # Автоскрытие через 8 сек
+        def step(i=1):
+            t = 1 - (1 - i / steps) ** 3  # ease-out
+            root.geometry(f"{round(w0 + (width - w0) * t)}x{round(h0 + (height - h0) * t)}+{MARGIN}+{MARGIN}")
+            if i < steps:
+                state["anim"] = root.after(15, step, i + 1)
+            else:
+                state["anim"] = None
+                done()
+        step()
 
-    def hide_reply(_event=None):
-        reply_win.withdraw()
-        state["reply_visible"] = False
-
-    global _reply_callback
-    _reply_callback = show_reply_window
-
-    recorder = voice.Recorder()
-    state = {"visible": False, "reply_visible": False}
+    def spin():
+        if state["mode"] == "busy":
+            state["angle"] = (state["angle"] - 12) % 360
+            spinner.itemconfigure(arc, start=state["angle"])
+            root.after(30, spin)
 
     def set_status(text: str):
         entry.configure(state="normal")
@@ -140,27 +132,56 @@ def _ui_loop(events: queue.Queue, on_submit, transcribe):
         entry.insert(0, text)
         entry.configure(state="disabled")
 
-    def show():
+    def show_input():
+        if state["anim"]:
+            root.after_cancel(state["anim"])
+            state["anim"] = None
+        state["mode"] = "input"
+        root.geometry(f"{INPUT_W}x{INPUT_H}+{MARGIN}+{MARGIN}")
+        use(entry, padx=22, pady=14)
         entry.configure(state="normal")
         entry.delete(0, "end")
         root.deiconify()
         root.lift()
         _force_foreground(hwnd)
         entry.focus_force()
-        state["visible"] = True
 
     def hide(_event=None):
+        if state["mode"] == "busy":
+            return  # ждём ответ: квадратик со спиннером остаётся на экране
         if recorder.active:
             recorder.cancel()
+        if state["anim"]:
+            root.after_cancel(state["anim"])
+            state["anim"] = None
         root.withdraw()
-        state["visible"] = False
+        state["mode"] = "hidden"
 
     def submit(_event=None):
         text = entry.get().strip()
         if entry.cget("state") == "disabled" or not text:
             return
-        hide()
+        state["mode"] = "busy"
+        animate(BUSY, BUSY, lambda: (use(spinner), spin()))
         on_submit(text)
+
+    def show_reply(text: str):
+        state["mode"] = "reply"
+        reply.configure(state="normal")
+        reply.delete("1.0", "end")
+        reply.insert("1.0", text)
+        reply.configure(state="disabled")
+        reply.yview_moveto(0)
+        # Высота под весь текст; запас 15% на перенос по словам. Не влезает в экран — колесо мыши прокручивает.
+        inner = INPUT_W - 2 * PAD
+        lines = sum(max(1, math.ceil(font.measure(line) * 1.15 / inner)) for line in text.split("\n"))
+        height = min(lines * font.metrics("linespace") + 2 * PAD + 6, root.winfo_screenheight() - 2 * MARGIN - 60)
+
+        def done():
+            use(reply, padx=PAD, pady=PAD)
+            _force_foreground(hwnd)
+            reply.focus_force()
+        animate(INPUT_W, height, done)
 
     def toggle_voice(_event=None):
         if not recorder.active:
@@ -169,7 +190,7 @@ def _ui_loop(events: queue.Queue, on_submit, transcribe):
             except OSError as e:
                 logger.error("Не удалось начать запись: %s", e)
                 set_status(f"Микрофон недоступен: {e}")
-                root.after(2000, show)
+                root.after(2000, show_input)
                 return "break"
             set_status("🎙 Говори… (Ctrl+Alt+Space — готово)")
             return "break"
@@ -189,38 +210,46 @@ def _ui_loop(events: queue.Queue, on_submit, transcribe):
         while not events.empty():
             event = events.get()
             if event == "toggle":
-                hide() if state["visible"] else show()
-            elif state["visible"] and isinstance(event, tuple) and event[0] == "voice":
+                if state["mode"] == "input":
+                    hide()
+                elif state["mode"] != "busy":
+                    show_input()
+            elif event[0] == "reply":
+                show_reply(event[1])
+            elif state["mode"] == "input" and event[0] == "voice":
                 entry.configure(state="normal")
                 entry.delete(0, "end")
                 entry.insert(0, event[1])
                 entry.icursor("end")
-            elif state["visible"] and isinstance(event, tuple) and event[0] == "voice_error":
+            elif state["mode"] == "input" and event[0] == "voice_error":
                 set_status(f"Не распознала: {event[1][:80]}")
-                root.after(2000, show)
+                root.after(2000, show_input)
         root.after(50, poll)
 
+    def on_focus_out(_event):
+        # Прячем, только когда фокус ушёл из приложения целиком (focus_get() is None), а не внутри окна.
+        root.after(150, lambda: hide() if state["mode"] in ("input", "reply")
+                   and root.focus_get() is None and not recorder.active else None)
+
     entry.bind("<Return>", submit)
-    entry.bind("<Escape>", hide)
     entry.bind("<Control-Alt-space>", toggle_voice)
-    reply_win.bind("<Button-1>", hide_reply)  # Клик по уведомлению скрывает его
-    reply_win.bind("<Escape>", hide_reply)
-    # Прячем, только когда фокус ушёл из приложения целиком (focus_get() is None), а не внутри окна.
-    entry.bind("<FocusOut>", lambda e: root.after(
-        150, lambda: hide() if state["visible"] and root.focus_get() is None and not recorder.active else None))
+    for w in (entry, reply):
+        w.bind("<Escape>", hide)
+        w.bind("<FocusOut>", on_focus_out)
     poll()
     root.mainloop()
 
 
 def show_reply(text: str):
-    """Показать всплывающее уведомление с ответом Ады."""
-    if _reply_callback:
-        _reply_callback(text)
+    """Показать ответ Ады в окне; можно вызывать из любого потока."""
+    if _events is not None:
+        _events.put(("reply", text))
 
 
 def start(on_submit, transcribe):
     """on_submit(text) и transcribe(wav_bytes) -> str вызываются из потоков окна."""
-    events: queue.Queue = queue.Queue()
-    threading.Thread(target=_hotkey_loop, args=(events,), daemon=True, name="ada-hotkey").start()
-    threading.Thread(target=_ui_loop, args=(events, on_submit, transcribe), daemon=True, name="ada-overlay").start()
-    return events
+    global _events
+    _events = queue.Queue()
+    threading.Thread(target=_hotkey_loop, args=(_events,), daemon=True, name="ada-hotkey").start()
+    threading.Thread(target=_ui_loop, args=(_events, on_submit, transcribe), daemon=True, name="ada-overlay").start()
+    return _events

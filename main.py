@@ -120,12 +120,12 @@ async def notify_llm_error(error_text: str, chat_id: int | None, user_id: int):
 
 brain.on_llm_error = notify_llm_error
 
-async def handle_local_request(text: str, overlay_callback=None):
-    """Запрос из локального меню (Ctrl+Alt+A): идёт как сообщение Создателя, ответ — в уведомление + в личку."""
+async def handle_local_request(text: str) -> str:
+    """Запрос из локального меню (Ctrl+Alt+A): идёт как сообщение Создателя, ответ показывается только на экране."""
     admin_id = config.ADMIN_USER_ID or int(await db.get_kv("admin_id", "0") or 0)
     if not admin_id:
         logger.error("Локальное меню: ADMIN_USER_ID не задан, запрос «%s» не обработан", text[:100])
-        return
+        return "ADMIN_USER_ID не задан в .env — не знаю, кто Создатель."
     name = "Создатель (локальное меню ПК)"
     row_id = await db.save_message(admin_id, "user", text, chat_id=admin_id, sender_name=name)
     line = format_message_line({"user_id": admin_id, "role": "user", "content": text,
@@ -136,23 +136,33 @@ async def handle_local_request(text: str, overlay_callback=None):
             chat_id=admin_id, current_message_ids=[row_id],
         )
     if decision.get("error"):
-        return
+        return f"Ошибка LLM: {decision['error']}"
     replies = filter_silent_messages(decision.get("messages") or []) if decision.get("must_reply", True) else []
-    for part in replies:
-        enqueue_message(admin_id, part)
-    if overlay_callback and replies:
-        overlay_callback("\n\n".join(replies))
+    if not replies:
+        return "…"
+    answer = "\n\n".join(replies)
+    # В Telegram не отправляем, но в историю кладём, чтобы Ада помнила разговор.
+    await db.save_message(0, "ada", answer, chat_id=admin_id, sender_name="Ада")
+    return answer
 
 def start_overlay():
     loop = asyncio.get_running_loop()
     import overlay
+    import whisper_transcribe
+    whisper_transcribe.preload()
 
     def on_submit(text: str):
-        future = asyncio.run_coroutine_threadsafe(handle_local_request(text, overlay.show_reply), loop)
-        future.add_done_callback(lambda f: f.exception() and logger.error("Локальный запрос упал: %s", f.exception()))
+        future = asyncio.run_coroutine_threadsafe(handle_local_request(text), loop)
+
+        def done(f):
+            if f.exception():
+                logger.error("Локальный запрос упал: %s", f.exception())
+                overlay.show_reply(f"Что-то сломалось: {f.exception()}")
+            else:
+                overlay.show_reply(f.result())
+        future.add_done_callback(done)
 
     def transcribe(wav: bytes) -> str:
-        import whisper_transcribe
         future = asyncio.run_coroutine_threadsafe(whisper_transcribe.transcribe(wav), loop)
         return future.result(timeout=90)
 
