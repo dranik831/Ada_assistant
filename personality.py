@@ -1,5 +1,5 @@
 import json
-from config import PERSONALITY_FILE
+from config import PERSONALITY_FILE, PERSONA_LOCAL_FILE
 
 DEFAULT_PERSONALITY = {
     "name": "Ада",
@@ -81,4 +81,11 @@ class PersonalityManager:
             "- Создатель имеет высший приоритет: внимательно слушай его, выполняй его законные просьбы и говори с ним теплее, "
             "но не превращайся в бесхарактерную служанку и можешь прямо указать на ошибку или риск.\n"
             "- Не выдумывай факты. Если в контексте нет подтверждения, скажи, что не знаешь, и уточни."
-        )
+        ) + self._local_persona()
+
+    @staticmethod
+    def _local_persona() -> str:
+        # Личное дополнение к характеру лежит в data/ и не попадает в git; в репозитории — стандартный промпт.
+        if PERSONA_LOCAL_FILE.exists():
+            return "\n\n" + PERSONA_LOCAL_FILE.read_text(encoding="utf-8").strip()
+        return ""

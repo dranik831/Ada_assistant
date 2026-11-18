@@ -8,6 +8,7 @@ DATA_DIR = BASE_DIR / "data"
 LOGS_DIR = BASE_DIR / "logs"
 ENV_FILE = BASE_DIR / ".env"
 PERSONALITY_FILE = BASE_DIR / "personality.json"
+PERSONA_LOCAL_FILE = DATA_DIR / "persona_local.txt"  # локальное дополнение к характеру, не коммитится
 
 DEFAULT_ENV = """# Telegram API credentials (https://my.telegram.org)
 TG_API_ID=
