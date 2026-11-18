@@ -6,6 +6,7 @@ import re
 import json
 import random
 from collections import defaultdict
+from datetime import datetime
 from telethon import TelegramClient, events, errors
 from telethon.tl.types import User, Channel, Chat
 from telethon.network.connection import ConnectionTcpMTProxyRandomizedIntermediate
@@ -16,7 +17,7 @@ from emotions import EmotionSystem
 from personality import PersonalityManager
 from tools import AgentTools
 from llm import UniversalAgent
-from brain import Brain
+from brain import Brain, format_message_line
 from autonomy import AutonomyEngine
 
 logging.basicConfig(
@@ -70,13 +71,16 @@ async def outgoing_worker():
     while True:
         item = await _outgoing_queue.get()
         try:
-            await client.send_message(item["chat_id"], item["text"])
-            await db.save_message(0, "ada", item["text"], chat_id=item["chat_id"])
+            sent = await client.send_message(item["chat_id"], item["text"])
+            await db.save_message(0, "ada", item["text"], chat_id=item["chat_id"],
+                                  sender_name="Ада", tg_message_id=getattr(sent, "id", None))
         except errors.FloodWaitError as flood:
             logger.warning("FloodWait %ss перед отправкой в %s", flood.seconds, item["chat_id"])
             await asyncio.sleep(flood.seconds + 1)
             try:
-                await client.send_message(item["chat_id"], item["text"])
+                sent = await client.send_message(item["chat_id"], item["text"])
+                await db.save_message(0, "ada", item["text"], chat_id=item["chat_id"],
+                                      sender_name="Ада", tg_message_id=getattr(sent, "id", None))
             except Exception as retry_error:
                 logger.error("Повторная отправка в %s не удалась: %s", item["chat_id"], retry_error)
         except Exception as e:
@@ -109,30 +113,55 @@ def filter_silent_messages(messages) -> list:
         if part and not _SILENCE_RE.match(str(part))
     ]
 
-async def collect_message(event, sender_id: int, text: str) -> str | None:
-    """Объединяет быстрые сообщения одного автора в одну реплику."""
+def _short(value: str, limit: int) -> str:
+    value = " ".join((value or "").split())
+    return value if len(value) <= limit else value[:limit] + "…"
+
+def display_name(entity) -> str:
+    if entity is None:
+        return "Неизвестно"
+    name = " ".join(filter(None, [getattr(entity, "first_name", None), getattr(entity, "last_name", None)]))
+    return name or getattr(entity, "title", None) or getattr(entity, "username", None) or str(getattr(entity, "id", "?"))
+
+async def describe_reply(reply_msg, my_id: int) -> str:
+    """Кратко описывает сообщение, на которое ответили: автор и текст."""
+    if reply_msg.sender_id == my_id:
+        author = "Ада (ты)"
+    else:
+        try:
+            author = display_name(await reply_msg.get_sender())
+        except Exception:
+            author = "Неизвестно"
+    body = reply_msg.text or ("[медиа]" if reply_msg.media else "")
+    return f"{author}: «{_short(body, 500)}»"
+
+async def collect_message(event, sender_id: int, item: dict) -> list | None:
+    """Объединяет быстрые сообщения одного автора в одну реплику.
+
+    item — {"line": оформленная строка, "id": id в БД}; владельцу возвращается список всех item."""
     key = (event.chat_id, sender_id)
     async with _message_locks[key]:
         current = _pending_messages.get(key)
         if current:
-            current["text"] += "\n" + text
+            current["items"].append(item)
             current["task"].cancel()
             # Первое событие остаётся владельцем генерации. Последующие события
             # только расширяют его буфер и не запускают второй ответ.
             is_owner = False
         else:
             future = asyncio.get_running_loop().create_future()
-            current = {"text": text, "future": future, "task": None}
+            current = {"items": [item], "future": future, "task": None}
             _pending_messages[key] = current
             is_owner = True
+            current_future = future
 
         async def flush():
             try:
                 await asyncio.sleep(config.MESSAGE_DEBOUNCE_SECONDS)
-                item = _pending_messages.pop(key, current)
-                owner_future = item["future"]
+                pending = _pending_messages.pop(key, current)
+                owner_future = pending["future"]
                 if not owner_future.done():
-                    owner_future.set_result(item["text"])
+                    owner_future.set_result(pending["items"])
             except asyncio.CancelledError:
                 return
 
@@ -140,7 +169,7 @@ async def collect_message(event, sender_id: int, text: str) -> str | None:
         current["task"] = asyncio.create_task(flush())
     if not is_owner:
         return None
-    return await future
+    return await current_future
 
 def may_join_group(chat_id: int) -> bool:
     if not config.GROUP_AUTONOMY_ENABLED:
@@ -151,27 +180,28 @@ def may_join_group(chat_id: int) -> bool:
         return False
     return random.random() < config.GROUP_REPLY_PROBABILITY
 
-async def collect_group_batch(chat_id: int, text: str) -> str | None:
+async def collect_group_batch(chat_id: int, item: dict) -> list | None:
     """После первого сигнала собирает первое и следующие пять сообщений группы."""
     async with _group_batch_locks[chat_id]:
         batch = _group_batches.get(chat_id)
         if batch:
-            batch["texts"].append(text)
-            if len(batch["texts"]) >= 6:
+            batch["items"].append(item)
+            if len(batch["items"]) >= 6:
                 if not batch["future"].done():
-                    batch["future"].set_result("\n".join(batch["texts"]))
+                    batch["future"].set_result(list(batch["items"]))
                 _group_batches.pop(chat_id, None)
             return None
 
         future = asyncio.get_running_loop().create_future()
-        batch = {"texts": [text], "future": future}
+        batch = {"items": [item], "future": future}
         _group_batches[chat_id] = batch
 
         async def finish_later():
             await asyncio.sleep(max(4.0, config.MESSAGE_DEBOUNCE_SECONDS + 2.0))
             if not future.done():
-                future.set_result("\n".join(batch["texts"]))
-            _group_batches.pop(chat_id, None)
+                future.set_result(list(batch["items"]))
+            if _group_batches.get(chat_id) is batch:
+                _group_batches.pop(chat_id, None)
 
         asyncio.create_task(finish_later())
     return await future
@@ -546,9 +576,16 @@ async def on_incoming_message(event):
     # Логика фильтрации сообщений в группах
     should_reply = False
     chat_context = ""
+    sender_name = display_name(sender)
+
+    # Сообщение, на которое отвечают, нужно в любом чате, а не только в группе.
+    reply_msg = await event.get_reply_message() if event.is_reply else None
+    is_reply_to_me = bool(reply_msg and reply_msg.sender_id == me.id)
+    reply_desc = await describe_reply(reply_msg, me.id) if reply_msg else ""
 
     if event.is_private:
         should_reply = True
+        await db.upsert_chat(event.chat_id, sender_name, "private")
         if is_new_user:
             chat_context = (
                 "[Это первое личное обращение. Секретарское приветствие уже отправлено отдельным сообщением; не повторяй его. "
@@ -558,18 +595,6 @@ async def on_incoming_message(event):
         chat = await event.get_chat()
         chat_title = getattr(chat, 'title', 'Группа')
         await db.upsert_chat(event.chat_id, chat_title, type(chat).__name__)
-        chat_context = f"[Сообщение из группового чата: '{chat_title}']\n"
-
-        is_reply_to_me = False
-        if event.is_reply:
-            reply_msg = await event.get_reply_message()
-            if reply_msg and reply_msg.sender_id == me.id:
-                is_reply_to_me = True
-            elif reply_msg:
-                # Фиксируем контекст ответа другому человеку
-                rep_sender = await reply_msg.get_sender()
-                rep_name = getattr(rep_sender, 'first_name', 'Кто-то')
-                chat_context += f"[Ответ на реплику {rep_name}: '{reply_msg.text}']\n"
 
         clean_text = re.sub(r'[^\w\s]', ' ', text.lower())
         mentioned = False
@@ -586,15 +611,24 @@ async def on_incoming_message(event):
         ):
             should_reply = True
 
-    # Проверка на пересылку
+    # Пересылка отмечается прямо в тексте, чтобы пометка сохранилась в истории.
+    stored_text = text
     if event.fwd_from:
         fwd_name = event.fwd_from.from_name or "Неизвестный источник"
-        chat_context += f"[Переслано от: {fwd_name}]\n"
+        stored_text = f"[переслано от: {fwd_name}] {text}"
 
-    # Сохраняем сообщение в контексте конкретного чата, а не только автора.
-    sender_name = " ".join(filter(None, [sender.first_name, sender.last_name])) or sender.username or str(sender.id)
-    full_log_text = f"[Автор: {sender_name}, ID: {sender.id}]\n{chat_context}{text}".strip()
-    await db.save_message(sender.id, "user", full_log_text, chat_id=event.chat_id)
+    # Сохраняем сообщение в контексте конкретного чата; автор и цитата — отдельными полями.
+    row = {
+        "user_id": sender.id, "role": "user", "content": stored_text,
+        "timestamp": datetime.now().isoformat(), "sender_name": sender_name,
+        "reply_to_text": reply_desc,
+    }
+    row_id = await db.save_message(
+        sender.id, "user", stored_text, chat_id=event.chat_id, sender_name=sender_name,
+        tg_message_id=event.id, reply_to_tg_id=reply_msg.id if reply_msg else None,
+        reply_to_text=reply_desc,
+    )
+    item = {"line": format_message_line(row, max_len=4000), "id": row_id, "text": stored_text}
 
     if not should_reply:
         return
@@ -604,19 +638,19 @@ async def on_incoming_message(event):
         return
 
     if event.is_private:
-        combined_text = await collect_message(event, sender.id, text)
-        if combined_text is None:
+        items = await collect_message(event, sender.id, item)
+        if items is None:
             return
-        if combined_text != text:
-            text = combined_text
+        if len(items) > 1:
             chat_context += "[Несколько быстрых сообщений собраны в одну законченную мысль.]\n"
     else:
-        combined_text = await collect_group_batch(event.chat_id, f"{sender_name}: {text}")
-        if combined_text is None:
+        items = await collect_group_batch(event.chat_id, item)
+        if items is None:
             return
-        text = combined_text
         chat_context += "[Ада наблюдала пакет сообщений группы и теперь решает, уместно ли вмешаться.]\n"
-        await db.update_chat_context(event.chat_id, summary=text)
+    text = "\n".join(entry["text"] for entry in items)
+    incoming_lines = "\n".join(entry["line"] for entry in items)
+    current_ids = [entry["id"] for entry in items]
 
     # Мгновенная отметка о прочтении
     try:
@@ -634,11 +668,12 @@ async def on_incoming_message(event):
         async with client.action(chat_id, 'typing'):
             decision = await brain.process_interaction(
                 sender.id,
-                text,
+                incoming_lines,
                 is_admin,
                 chat_context,
                 chat_id=event.chat_id,
                 allow_memory_write=explicit_memory_request,
+                current_message_ids=current_ids,
             )
 
 
@@ -649,20 +684,27 @@ async def on_incoming_message(event):
     if not reply_messages:
         logger.info("Ада осознанно промолчала в чате %s", chat_id)
         return
-    if reply_messages:
-        if not event.is_private:
-            _group_last_reply[event.chat_id] = asyncio.get_running_loop().time()
-        for reply_text in reply_messages[:6]:
-            if not reply_text:
-                continue
-            await asyncio.sleep(min(2.5, max(0.6, len(reply_text) * 0.02)))
-            await send_with_flood_wait(lambda rt=reply_text: event.reply(rt))
-            await db.save_message(0, "ada", reply_text, chat_id=event.chat_id)
+    if not event.is_private:
+        _group_last_reply[event.chat_id] = asyncio.get_running_loop().time()
+    # Ада отвечает реплаем на сообщение event — его и сохраняем как цитату.
+    answered_desc = f"{sender_name}: «{_short(item['text'], 200)}»"
+    for reply_text in reply_messages[:6]:
+        if not reply_text:
+            continue
+        await asyncio.sleep(min(2.5, max(0.6, len(reply_text) * 0.02)))
+        sent = await send_with_flood_wait(lambda rt=reply_text: event.reply(rt))
+        await db.save_message(
+            0, "ada", reply_text, chat_id=event.chat_id, sender_name="Ада",
+            tg_message_id=getattr(sent, "id", None), reply_to_tg_id=event.id,
+            reply_to_text=answered_desc,
+        )
 
 @client.on(events.MessageEdited(incoming=True))
 async def on_message_edited(event):
     try:
         message = event.message
+        if message.text:
+            await db.update_message_text(event.chat_id, message.id, message.text)
         await db.add_event(
             "message_edited",
             message.text or "[медиа]",

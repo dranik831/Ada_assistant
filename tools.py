@@ -9,6 +9,7 @@ from pathlib import Path
 import aiohttp
 import trafilatura
 from telethon import TelegramClient
+from telethon.utils import get_peer_id
 from telethon.tl.functions.messages import EditMessageRequest, DeleteMessagesRequest, SendReactionRequest
 from telethon.tl.types import ReactionEmoji
 
@@ -216,10 +217,9 @@ class AgentTools:
                 await self.client.get_dialogs(limit=50)
                 entity = await self.client.get_entity(entity_target)
 
-            await self.client.send_message(entity, message)
-            uid = getattr(entity, 'id', 0)
-            if uid:
-                await self.db.save_message(uid, "ada", message)
+            sent = await self.client.send_message(entity, message)
+            await self.db.save_message(0, "ada", message, chat_id=get_peer_id(entity),
+                                       sender_name="Ада", tg_message_id=getattr(sent, "id", None))
             return f"Сообщение успешно отправлено в {target}."
         except Exception as e:
             return f"Ошибка отправки в {target}: {e}"
@@ -243,7 +243,11 @@ class AgentTools:
     async def reply_to_message(self, target: str, message_id: int, message: str) -> str:
         try:
             entity = await self.client.get_entity(int(target) if str(target).lstrip('-').isdigit() else target)
-            await self.client.send_message(entity, message[:4096], reply_to=int(message_id))
+            sent = await self.client.send_message(entity, message[:4096], reply_to=int(message_id))
+            await self.db.save_message(0, "ada", message[:4096], chat_id=get_peer_id(entity),
+                                       sender_name="Ада", tg_message_id=getattr(sent, "id", None),
+                                       reply_to_tg_id=int(message_id),
+                                       reply_to_text=f"сообщение #{message_id}")
             return f"Ответ на сообщение {message_id} отправлен."
         except Exception as e:
             return f"Не удалось ответить на сообщение: {e}"

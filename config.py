@@ -35,6 +35,8 @@ GROUP_AUTONOMY_ENABLED=true
 GROUP_REPLY_PROBABILITY=0.08
 GROUP_REPLY_COOLDOWN_MINUTES=20
 MESSAGE_DEBOUNCE_SECONDS=3
+CONTEXT_CHATS=3
+CONTEXT_MESSAGES_PER_CHAT=10
 SECRETARY_ENABLED=true
 CALENDAR_FILE=data/calendar.json
 SCHEDULE_FILE=data/schedule.json
@@ -143,6 +145,11 @@ SYSTEM_COMMAND_ALLOWLIST = [
     for token in os.getenv("SYSTEM_COMMAND_ALLOWLIST", "").split(",")
     if token.strip()
 ]
+
+# Контекст диалога: сколько последних чатов (включая текущий) и сколько
+# последних сообщений из каждого передаётся модели.
+CONTEXT_CHATS = max(1, int(os.getenv("CONTEXT_CHATS", "3")))
+CONTEXT_MESSAGES_PER_CHAT = max(1, int(os.getenv("CONTEXT_MESSAGES_PER_CHAT", "10")))
 
 DB_PATH = DATA_DIR / "ada.db"
 SESSION_PATH = DATA_DIR / "ada_userbot"

@@ -56,11 +56,20 @@ class Database:
                     timestamp TEXT DEFAULT CURRENT_TIMESTAMP
                 );
             """)
-            # Миграция старой базы: раньше контекст хранился только по автору.
+            # Миграция старой базы: раньше контекст хранился только по автору,
+            # а имя автора и цитата ответа были вклеены прямо в content.
             cursor = await db.execute("PRAGMA table_info(messages)")
-            columns = await cursor.fetchall()
-            if not any(column[1] == "chat_id" for column in columns):
-                await db.execute("ALTER TABLE messages ADD COLUMN chat_id INTEGER")
+            message_columns = {column[1] for column in await cursor.fetchall()}
+            for column, definition in {
+                "chat_id": "INTEGER",
+                "sender_name": "TEXT DEFAULT ''",
+                "tg_message_id": "INTEGER",
+                "reply_to_tg_id": "INTEGER",
+                "reply_to_text": "TEXT DEFAULT ''",
+            }.items():
+                if column not in message_columns:
+                    await db.execute(f"ALTER TABLE messages ADD COLUMN {column} {definition}")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_messages_chat ON messages(chat_id, id)")
 
             await db.execute("""
                 CREATE TABLE IF NOT EXISTS global_memories (
@@ -258,65 +267,64 @@ class Database:
             await db.execute(f"UPDATE users SET {', '.join(fields)} WHERE user_id = ?", tuple(values))
             await db.commit()
 
-    async def save_message(self, user_id: int, role: str, content: str, chat_id: int | None = None):
+    async def save_message(self, user_id: int, role: str, content: str, chat_id: int | None = None,
+                           sender_name: str = "", tg_message_id: int | None = None,
+                           reply_to_tg_id: int | None = None, reply_to_text: str = "") -> int:
+        """Сохраняет реплику; автор и цитата ответа хранятся отдельными полями."""
         now_str = datetime.now().isoformat()
         async with aiosqlite.connect(self.db_path) as db:
-            await db.execute(
-                "INSERT INTO messages (user_id, chat_id, role, content, timestamp) VALUES (?, ?, ?, ?, ?)",
-                (user_id, chat_id, role, content[:12000], now_str),
-            )
-            await db.execute("UPDATE users SET last_interaction = ? WHERE user_id = ?", (now_str, user_id))
+            cursor = await db.execute("""
+                INSERT INTO messages (user_id, chat_id, role, content, timestamp,
+                    sender_name, tg_message_id, reply_to_tg_id, reply_to_text)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (user_id, chat_id, role, content[:12000], now_str, sender_name[:200],
+                  tg_message_id, reply_to_tg_id, reply_to_text[:1000]))
+            if user_id:
+                await db.execute("UPDATE users SET last_interaction = ? WHERE user_id = ?", (now_str, user_id))
             await db.commit()
+            return cursor.lastrowid
 
-    async def get_active_dialog(self, user_id: int, chat_id: int | None = None, limit: int = 12) -> list:
+    async def get_chat_messages(self, chat_id: int, limit: int = 10, exclude_ids=()) -> list:
+        """Последние limit реплик чата в хронологическом порядке."""
+        exclude_ids = [int(i) for i in exclude_ids or ()]
+        query = """
+            SELECT id, user_id, role, content, timestamp, sender_name, reply_to_text
+            FROM messages WHERE chat_id = ?
+        """
+        params: list = [chat_id]
+        if exclude_ids:
+            query += f" AND id NOT IN ({','.join('?' * len(exclude_ids))})"
+            params.extend(exclude_ids)
+        query += " ORDER BY id DESC LIMIT ?"
+        params.append(max(1, int(limit)))
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
-            if chat_id is None:
-                cursor = await db.execute("""
-                SELECT role, content, timestamp FROM messages 
-                WHERE user_id = ? AND archived = 0 ORDER BY id DESC LIMIT ?
-                """, (user_id, limit))
-            else:
-                cursor = await db.execute("""
-                SELECT role, content, timestamp FROM messages
-                WHERE chat_id = ? AND archived = 0 ORDER BY id DESC LIMIT ?
-                """, (chat_id, limit))
+            cursor = await db.execute(query, params)
             rows = await cursor.fetchall()
             return [dict(r) for r in reversed(rows)]
 
-    async def count_unarchived_messages(self, user_id: int, chat_id: int | None = None) -> int:
-        async with aiosqlite.connect(self.db_path) as db:
-            if chat_id is None:
-                cursor = await db.execute("SELECT COUNT(*) FROM messages WHERE user_id = ? AND archived = 0", (user_id,))
-            else:
-                cursor = await db.execute("SELECT COUNT(*) FROM messages WHERE chat_id = ? AND archived = 0", (chat_id,))
-            res = await cursor.fetchone()
-            return res[0] if res else 0
-
-    async def get_messages_for_compression(self, user_id: int, chat_id: int | None = None, offset: int = 12) -> list:
+    async def get_recent_chats(self, exclude_chat_id: int | None, limit: int) -> list:
+        """Чаты с самой свежей активностью (кроме текущего), новые первыми."""
+        if limit <= 0:
+            return []
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
-            if chat_id is None:
-                cursor = await db.execute("""
-                    SELECT id, role, content FROM messages
-                    WHERE user_id = ? AND archived = 0 ORDER BY id ASC
-                """, (user_id,))
-            else:
-                cursor = await db.execute("""
-                    SELECT id, role, content FROM messages
-                    WHERE chat_id = ? AND archived = 0 ORDER BY id ASC
-                """, (chat_id,))
-            rows = await cursor.fetchall()
-            if len(rows) > offset:
-                return [dict(r) for r in rows[:-offset]]
-            return []
+            cursor = await db.execute("""
+                SELECT m.chat_id, MAX(m.id) AS last_id, MAX(m.timestamp) AS last_ts,
+                       c.title AS title, c.kind AS kind
+                FROM messages m LEFT JOIN chats c ON c.chat_id = m.chat_id
+                WHERE m.chat_id IS NOT NULL AND m.chat_id != ?
+                GROUP BY m.chat_id ORDER BY last_id DESC LIMIT ?
+            """, (exclude_chat_id or 0, limit))
+            return [dict(r) for r in await cursor.fetchall()]
 
-    async def archive_messages(self, message_ids: list):
-        if not message_ids:
-            return
+    async def update_message_text(self, chat_id: int, tg_message_id: int, content: str):
+        """Синхронизирует сохранённую реплику после редактирования в Telegram."""
         async with aiosqlite.connect(self.db_path) as db:
-            q = f"UPDATE messages SET archived = 1 WHERE id IN ({','.join(['?']*len(message_ids))})"
-            await db.execute(q, tuple(message_ids))
+            await db.execute(
+                "UPDATE messages SET content = ? WHERE chat_id = ? AND tg_message_id = ?",
+                (content[:12000], chat_id, tg_message_id),
+            )
             await db.commit()
 
     async def add_memory(self, category: str, content: str, importance: int = 5):

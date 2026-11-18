@@ -132,6 +132,7 @@ class AutonomyEngine:
                     if random.random() >= chance:
                         continue
                     prompt = (
+                        "[Служебная задача от системы, это НЕ сообщение собеседника] "
                         "Оцени, уместно ли самой начать короткий разговор с этим человеком. "
                         "Инициатива редкая и должна опираться на конкретную тему или повод из памяти/истории. "
                         "Не выдумывай повод. Если естественной причины нет, верни только NO_REPLY."
@@ -141,10 +142,10 @@ class AutonomyEngine:
                     )
                     messages = decision.get("messages") or [decision.get("reply", "")]
                     reply_text = "\n".join(part.strip() for part in messages if part).strip()
-                    if reply_text and not self._SILENCE_RE.match(reply_text) and "NO_REPLY" not in reply_text.upper():
+                    if reply_text and not _SILENCE_RE.match(reply_text) and "NO_REPLY" not in reply_text.upper():
                         logger.info("Автономное сообщение пользователю %s с категорией %s", user_id, status)
+                        # Сохранение в историю делает исходящая очередь.
                         await self.send_message(user_id, reply_text)
-                        await self.db.save_message(user_id, "ada", reply_text, chat_id=user_id)
                         await self.db.mark_proactive_attempt(user_id, now.isoformat(), today)
                         break
 
@@ -198,7 +199,6 @@ class AutonomyEngine:
             try:
                 text = f"Напоминание: {task['description']}"
                 await self.send_message(task["chat_id"] or task["owner_id"], text)
-                await self.db.save_message(0, "ada", text, chat_id=task["chat_id"])
                 repeat_rule = (task.get("repeat_rule") or "").strip()
                 if repeat_rule:
                     try:
