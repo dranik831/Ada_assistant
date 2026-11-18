@@ -29,6 +29,11 @@ LLM_MODEL=gpt-4o-mini
 LLM_TIMEOUT_SECONDS=45
 LLM_STARTUP_TIMEOUT_SECONDS=12
 
+# Распознавание речи: local (Whisper medium на компе) или api (внешний сервер)
+WHISPER_MODE=local
+WHISPER_API_URL=
+WHISPER_API_KEY=
+
 # Настройки автономности
 AUTONOMY_ENABLED=true
 GROUP_AUTONOMY_ENABLED=true
@@ -150,6 +155,11 @@ SYSTEM_COMMAND_ALLOWLIST = [
 # последних сообщений из каждого передаётся модели.
 CONTEXT_CHATS = max(1, int(os.getenv("CONTEXT_CHATS", "3")))
 CONTEXT_MESSAGES_PER_CHAT = max(1, int(os.getenv("CONTEXT_MESSAGES_PER_CHAT", "10")))
+
+# Распознавание речи
+WHISPER_MODE = os.getenv("WHISPER_MODE", "local").strip().lower()
+WHISPER_API_URL = os.getenv("WHISPER_API_URL", "").strip()
+WHISPER_API_KEY = os.getenv("WHISPER_API_KEY", "").strip()
 
 DB_PATH = DATA_DIR / "ada.db"
 SESSION_PATH = DATA_DIR / "ada_userbot"

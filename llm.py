@@ -1,5 +1,4 @@
 import os
-import base64
 import json
 import logging
 import re
@@ -407,20 +406,6 @@ class UniversalAgent:
             if parts:
                 return parts[:6]
         return [text]
-
-    async def transcribe(self, wav: bytes) -> str:
-        """Распознаёт речь из WAV через Gemini (OpenAI-совместимый input_audio)."""
-        client = self.client if self.provider == "gemini" else self.fallback_client
-        if client is None:
-            raise RuntimeError("Для распознавания речи нужен GEMINI_API_KEY")
-        resp = await client.chat.completions.create(
-            model=config.GEMINI_MODEL,
-            messages=[{"role": "user", "content": [
-                {"type": "text", "text": "Распознай речь дословно. Верни только произнесённый текст, без пояснений."},
-                {"type": "input_audio", "input_audio": {"data": base64.b64encode(wav).decode(), "format": "wav"}},
-            ]}],
-        )
-        return (resp.choices[0].message.content or "").strip()
 
     async def summarize_dialog(self, text_chunk: str) -> str:
         try:
