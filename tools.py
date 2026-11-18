@@ -1,5 +1,8 @@
 import os
+import base64
+import shutil
 import subprocess
+import webbrowser
 import asyncio
 import logging
 import json
@@ -46,6 +49,11 @@ class AgentTools:
 
         return self._admin_context.get()
 
+    def _pc_allowed(self) -> bool:
+        # Управление ПК: только Создатель и только в его личке/локальном меню.
+        # В группе пакет сообщений идёт от имени первого автора, туда могут попасть чужие реплики.
+        return self._is_admin() and self._chat_context.get() > 0
+
     async def list_my_capabilities(self) -> str:
         """Возвращает перечень доступных возможностей Ады."""
         return (
@@ -58,12 +66,14 @@ class AgentTools:
             "6. remember_fact / search_memory: долговременная память.\n"
             "7. update_my_profile: изменение имени и описания аккаунта."
             "\n8. list_dialogs / read_chat_history / search_telegram: работа с диалогами и историей."
+            "\n9. open_on_pc / open_terminal / clipboard: управление ПК Создателя — сайты, ярлыки, папки в VS Code, "
+            "терминал с командой, буфер обмена (только Создатель в личке или локальном меню)."
         )
 
     async def execute_system_command(self, command: str) -> str:
         """Выполняет системную команду в PowerShell/Bash. Доступно только Создателю."""
-        if not self._is_admin():
-            return "Ошибка: Доступ к терминалу заблокирован политикой безопасности. Команда доступна только Создателю."
+        if not self._pc_allowed():
+            return "Ошибка: Доступ к терминалу заблокирован политикой безопасности. Команда доступна только Создателю в личном чате."
 
         if config.SYSTEM_COMMAND_ALLOWLIST:
             first_token = command.strip().split(maxsplit=1)[0].strip('"\'').lower()
@@ -104,8 +114,87 @@ class AgentTools:
         except Exception as e:
             return f"Ошибка запуска процесса: {e}"
 
+    async def open_on_pc(self, target: str, app: str = "") -> str:
+        """Открывает на ПК сайт, ярлык с рабочего стола, файл или папку; app='vscode' — в VS Code."""
+        if not self._pc_allowed():
+            return "Управление компьютером доступно только Создателю в личном чате."
+        target = (target or "").strip().strip('"')
+        if not target:
+            return "Не указано, что открыть."
+        try:
+            if target.lower().startswith(("http://", "https://")):
+                webbrowser.open(target)
+                return f"Открыла в браузере: {target}"
+            path = Path(os.path.expandvars(os.path.expanduser(target)))
+            if not path.exists():
+                path = self._find_on_desktop(target)
+                if path is None:
+                    return f"Не нашла «{target}»: это не URL, не существующий путь и не ярлык на рабочем столе."
+            if app.strip().lower() in {"vscode", "code", "vs code"}:
+                # URI-схема VS Code: без cmd-обёртки code.cmd и без разбора аргументов шеллом.
+                os.startfile("vscode://file/" + path.resolve().as_posix())
+                return f"Открыла в VS Code: {path}"
+            os.startfile(str(path))
+            return f"Открыла: {path}"
+        except OSError as e:
+            return f"Не удалось открыть «{target}»: {e}"
+
+    @staticmethod
+    def _find_on_desktop(name: str):
+        """Ищет ярлык/файл на рабочем столе пользователя и общем рабочем столе по части имени."""
+        wanted = name.lower().removesuffix(".lnk").removesuffix(".url")
+        desktops = [Path.home() / "Desktop", Path(os.environ.get("PUBLIC", r"C:\Users\Public")) / "Desktop"]
+        items = [item for d in desktops if d.is_dir() for item in d.iterdir()]
+        exact = [item for item in items if item.stem.lower() == wanted]
+        partial = [item for item in items if wanted in item.stem.lower()]
+        return (exact or partial or [None])[0]
+
+    async def open_terminal(self, command: str = "", cwd: str = "") -> str:
+        """Открывает видимое окно терминала (PowerShell), при необходимости сразу с командой."""
+        if not self._pc_allowed():
+            return "Управление компьютером доступно только Создателю в личном чате."
+        workdir = Path(os.path.expandvars(os.path.expanduser(cwd))) if cwd else Path.home()
+        if not workdir.is_dir():
+            return f"Папка не найдена: {cwd}"
+        args = ["powershell.exe", "-NoExit"] + (["-Command", command] if command else [])
+        try:
+            if shutil.which("wt"):
+                subprocess.Popen(["wt", "-d", str(workdir)] + args)
+            else:
+                subprocess.Popen(args, cwd=workdir, creationflags=subprocess.CREATE_NEW_CONSOLE)
+        except OSError as e:
+            return f"Не удалось открыть терминал: {e}"
+        logger.info("Открыт терминал в %s: %s", workdir, command)
+        return f"Открыла терминал в {workdir}" + (f" с командой: {command}" if command else "") + "."
+
+    async def clipboard(self, action: str = "get", text: str = "") -> str:
+        """Буфер обмена Windows: action='get' — прочитать, 'set' — записать text."""
+        if not self._pc_allowed():
+            return "Управление компьютером доступно только Создателю в личном чате."
+        if action == "set":
+            # Текст передаётся в base64: никаких кавычек и подстановок внутри команды PowerShell.
+            payload = base64.b64encode(text.encode("utf-8")).decode()
+            script = f"Set-Clipboard -Value ([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('{payload}')))"
+        elif action == "get":
+            script = "[Console]::OutputEncoding=[Text.Encoding]::UTF8; Get-Clipboard -Raw"
+        else:
+            return "action должен быть get или set."
+        process = await asyncio.create_subprocess_exec(
+            "powershell.exe", "-NoProfile", "-Command", script,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+        stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=15)
+        if process.returncode:
+            return f"Ошибка буфера обмена: {stderr.decode('utf-8', errors='replace')[:500]}"
+        if action == "set":
+            return f"Скопировала в буфер обмена ({len(text)} символов)."
+        content = stdout.decode("utf-8", errors="replace").strip()
+        return f"В буфере обмена:\n{content[:3000]}" if content else "Буфер обмена пуст (или там не текст)."
+
     async def read_file(self, path: str) -> str:
         """Читает текстовый файл по указанному пути."""
+        if not self._pc_allowed():
+            return "Доступ к файлам компьютера есть только у Создателя в личном чате."
         try:
             target = Path(path).resolve()
             if not target.exists():
@@ -121,8 +210,8 @@ class AgentTools:
 
     async def write_file(self, path: str, content: str) -> str:
         """Записывает текст в файл (только Создатель)."""
-        if not self._is_admin():
-            return "Запись файлов разрешена только Создателю."
+        if not self._pc_allowed():
+            return "Запись файлов разрешена только Создателю в личном чате."
         try:
             target = Path(path).resolve()
             target.parent.mkdir(parents=True, exist_ok=True)
@@ -134,6 +223,8 @@ class AgentTools:
 
     async def list_directory(self, path: str = ".") -> str:
         """Возвращает список файлов и папок в директории."""
+        if not self._pc_allowed():
+            return "Доступ к файлам компьютера есть только у Создателя в личном чате."
         try:
             p = Path(path).resolve()
             if not p.exists():

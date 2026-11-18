@@ -120,6 +120,39 @@ async def notify_llm_error(error_text: str, chat_id: int | None, user_id: int):
 
 brain.on_llm_error = notify_llm_error
 
+async def handle_local_request(text: str):
+    """Запрос из локального меню (Win+Shift+A): идёт как сообщение Создателя, ответ — ему в личку."""
+    admin_id = config.ADMIN_USER_ID or int(await db.get_kv("admin_id", "0") or 0)
+    if not admin_id:
+        logger.error("Локальное меню: ADMIN_USER_ID не задан, запрос «%s» не обработан", text[:100])
+        return
+    name = "Создатель (локальное меню ПК)"
+    row_id = await db.save_message(admin_id, "user", text, chat_id=admin_id, sender_name=name)
+    line = format_message_line({"user_id": admin_id, "role": "user", "content": text,
+                                "timestamp": datetime.now().isoformat(), "sender_name": name}, max_len=4000)
+    async with _chat_processing_locks[admin_id]:
+        decision = await brain.process_interaction(
+            admin_id, line, True, "[Запрос набран в локальном меню на ПК Создателя.]\n",
+            chat_id=admin_id, current_message_ids=[row_id],
+        )
+    if decision.get("error"):
+        return
+    for part in filter_silent_messages(decision.get("messages") or []) if decision.get("must_reply", True) else []:
+        enqueue_message(admin_id, part)
+
+def start_overlay():
+    loop = asyncio.get_running_loop()
+
+    def on_submit(text: str):
+        future = asyncio.run_coroutine_threadsafe(handle_local_request(text), loop)
+        future.add_done_callback(lambda f: f.exception() and logger.error("Локальный запрос упал: %s", f.exception()))
+
+    def transcribe(wav: bytes) -> str:
+        return asyncio.run_coroutine_threadsafe(agent.transcribe(wav), loop).result(timeout=90)
+
+    import overlay
+    overlay.start(on_submit, transcribe)
+
 async def send_with_flood_wait(coro_factory):
     """Выполняет отправку, выдерживая FloodWait один раз."""
     try:
@@ -233,8 +266,11 @@ async def collect_group_batch(chat_id: int, item: dict) -> list | None:
     return await future
 
 async def check_admin(sender: User) -> bool:
-    saved_admin_id = await db.get_kv("admin_id")
     configured_admin_id = config.ADMIN_USER_ID
+    if configured_admin_id:
+        # Задан ID — только он. Username можно сменить и его займёт чужой человек.
+        return sender.id == configured_admin_id
+    saved_admin_id = await db.get_kv("admin_id")
     if (saved_admin_id and str(sender.id) == saved_admin_id) or (
         configured_admin_id and sender.id == configured_admin_id
     ):
@@ -811,6 +847,9 @@ async def main():
 
     await autonomy.start()
     print("[+] Модуль автономности активирован.")
+    if os.name == "nt":
+        start_overlay()
+        print("[+] Локальное меню: Win+Shift+A")
     try:
         await client.run_until_disconnected()
     finally:

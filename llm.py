@@ -1,4 +1,5 @@
 import os
+import base64
 import json
 import logging
 import re
@@ -80,6 +81,9 @@ class UniversalAgent:
             "set_person_category": self.tools.set_person_category,
             "set_person_respect": self.tools.set_person_respect,
             "set_mood": self.tools.set_mood,
+            "open_on_pc": self.tools.open_on_pc,
+            "open_terminal": self.tools.open_terminal,
+            "clipboard": self.tools.clipboard,
         }
 
 
@@ -290,6 +294,9 @@ class UniversalAgent:
             action("set_person_category", "Самостоятельно изменить категорию текущего собеседника по устойчивому поведению; нельзя назначать админа или менять Создателя.", {"user_id": {"type": "integer"}, "category": {"type": "string"}}, ["user_id", "category"]),
             action("set_person_respect", "Самостоятельно изменить уважение к текущему собеседнику (0..100) с учётом его поведения; Создатель неизменен.", {"user_id": {"type": "integer"}, "respect": {"type": "integer"}}, ["user_id", "respect"]),
             action("set_mood", "Самостоятельно изменить собственную эмоцию (0..100) в ответ на ситуацию.", {"emotion": {"type": "string"}, "value": {"type": "integer"}}, ["emotion", "value"]),
+            action("open_on_pc", "ПК Создателя: открыть сайт (URL), ярлык с рабочего стола (по имени), файл или папку. app='vscode' — открыть папку/файл в VS Code. Только Создатель.", {"target": {"type": "string"}, "app": {"type": "string"}}, ["target"]),
+            action("open_terminal", "ПК Создателя: открыть видимое окно терминала PowerShell в папке cwd и сразу выполнить command (необязательно). Только Создатель.", {"command": {"type": "string"}, "cwd": {"type": "string"}}, []),
+            action("clipboard", "ПК Создателя: буфер обмена. action='get' — прочитать текст, 'set' — записать text. Только Создатель.", {"action": {"type": "string", "enum": ["get", "set"]}, "text": {"type": "string"}}, ["action"]),
         ])
         return specs
 
@@ -400,6 +407,20 @@ class UniversalAgent:
             if parts:
                 return parts[:6]
         return [text]
+
+    async def transcribe(self, wav: bytes) -> str:
+        """Распознаёт речь из WAV через Gemini (OpenAI-совместимый input_audio)."""
+        client = self.client if self.provider == "gemini" else self.fallback_client
+        if client is None:
+            raise RuntimeError("Для распознавания речи нужен GEMINI_API_KEY")
+        resp = await client.chat.completions.create(
+            model=config.GEMINI_MODEL,
+            messages=[{"role": "user", "content": [
+                {"type": "text", "text": "Распознай речь дословно. Верни только произнесённый текст, без пояснений."},
+                {"type": "input_audio", "input_audio": {"data": base64.b64encode(wav).decode(), "format": "wav"}},
+            ]}],
+        )
+        return (resp.choices[0].message.content or "").strip()
 
     async def summarize_dialog(self, text_chunk: str) -> str:
         try:
