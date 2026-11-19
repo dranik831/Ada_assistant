@@ -3,7 +3,7 @@
 Enter отправляет запрос: окно плавно сжимается в квадратик со спиннером, а когда ответ готов,
 разворачивается и показывает его целиком. Ответ виден только здесь, в Telegram он не уходит.
 Ctrl+Alt+Space — запись голоса: первое нажатие начинает, второе распознаёт речь в поле ввода.
-Esc или клик мимо окна закрывает его.
+Esc или клик мимо окна закрывает поле ввода. Ответ висит REPLY_MS и закрывается сам или крестиком.
 """
 import ctypes
 import ctypes.wintypes as wt
@@ -28,6 +28,7 @@ PAD = 18
 FG = "#f2f3ff"
 KEY = "#1c1e2c"       # цвет-ключ: эти пиксели прозрачны, сквозь них видно размытие
 TINT = 0x992b1d1b     # AABBGGRR для акрила: тёмно-синяя тонировка, ~60% непрозрачности
+REPLY_MS = 10_000     # сколько ответ висит на экране
 
 _events: queue.Queue | None = None
 
@@ -88,6 +89,8 @@ def _ui_loop(events: queue.Queue, on_submit, transcribe):
     arc = spinner.create_arc(16, 16, BUSY - 16, BUSY - 16, start=0, extent=100, style="arc", outline=FG, width=3)
     reply = tk.Text(root, font=font, bg=KEY, fg=FG, relief="flat", bd=0, highlightthickness=0,
                     wrap="word", cursor="arrow", selectbackground="#4a4f7a")
+    # Фон не KEY: прозрачные пиксели пропускают клики насквозь, и в крестик было бы трудно попасть.
+    close = tk.Label(root, text="✕", font=("Segoe UI", 11), bg="#3a3d5c", fg=FG, cursor="hand2", padx=6)
     widgets = (entry, spinner, reply)
     entry.pack(fill="both", expand=True, padx=22, pady=14)
     root.update_idletasks()
@@ -95,11 +98,17 @@ def _ui_loop(events: queue.Queue, on_submit, transcribe):
     _apply_glass(hwnd)
 
     recorder = voice.Recorder()
-    state = {"mode": "hidden", "anim": None, "angle": 0}  # mode: hidden | input | busy | reply
+    state = {"mode": "hidden", "anim": None, "angle": 0, "timer": None}  # mode: hidden | input | busy | reply
+
+    def cancel_timer():
+        if state["timer"]:
+            root.after_cancel(state["timer"])
+            state["timer"] = None
 
     def use(widget=None, **pack):
         for w in widgets:
             w.pack_forget()
+        close.place_forget()
         if widget is not None:
             widget.pack(fill="both", expand=True, **pack)
 
@@ -136,6 +145,7 @@ def _ui_loop(events: queue.Queue, on_submit, transcribe):
         if state["anim"]:
             root.after_cancel(state["anim"])
             state["anim"] = None
+        cancel_timer()
         state["mode"] = "input"
         root.geometry(f"{INPUT_W}x{INPUT_H}+{MARGIN}+{MARGIN}")
         use(entry, padx=22, pady=14)
@@ -151,6 +161,7 @@ def _ui_loop(events: queue.Queue, on_submit, transcribe):
             return  # ждём ответ: квадратик со спиннером остаётся на экране
         if recorder.active:
             recorder.cancel()
+        cancel_timer()
         if state["anim"]:
             root.after_cancel(state["anim"])
             state["anim"] = None
@@ -166,7 +177,10 @@ def _ui_loop(events: queue.Queue, on_submit, transcribe):
         on_submit(text)
 
     def show_reply(text: str):
+        cancel_timer()
         state["mode"] = "reply"
+        root.deiconify()  # show_on_desktop может прийти, когда окно скрыто
+        root.lift()
         reply.configure(state="normal")
         reply.delete("1.0", "end")
         reply.insert("1.0", text)
@@ -179,8 +193,8 @@ def _ui_loop(events: queue.Queue, on_submit, transcribe):
 
         def done():
             use(reply, padx=PAD, pady=PAD)
-            _force_foreground(hwnd)
-            reply.focus_force()
+            close.place(relx=1, x=-6, y=6, anchor="ne")
+            state["timer"] = root.after(REPLY_MS, hide)
         animate(INPUT_W, height, done)
 
     def toggle_voice(_event=None):
@@ -228,14 +242,14 @@ def _ui_loop(events: queue.Queue, on_submit, transcribe):
 
     def on_focus_out(_event):
         # Прячем, только когда фокус ушёл из приложения целиком (focus_get() is None), а не внутри окна.
-        root.after(150, lambda: hide() if state["mode"] in ("input", "reply")
+        root.after(150, lambda: hide() if state["mode"] == "input"
                    and root.focus_get() is None and not recorder.active else None)
 
     entry.bind("<Return>", submit)
     entry.bind("<Control-Alt-space>", toggle_voice)
-    for w in (entry, reply):
-        w.bind("<Escape>", hide)
-        w.bind("<FocusOut>", on_focus_out)
+    entry.bind("<Escape>", hide)
+    entry.bind("<FocusOut>", on_focus_out)
+    close.bind("<Button-1>", hide)
     poll()
     root.mainloop()
 
