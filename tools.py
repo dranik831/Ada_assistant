@@ -6,12 +6,13 @@ import webbrowser
 import asyncio
 import logging
 import json
+import sys
 from datetime import datetime, timedelta
 from contextvars import ContextVar
 from pathlib import Path
 import aiohttp
 import trafilatura
-from telethon import TelegramClient
+from telethon import TelegramClient, errors
 from telethon.utils import get_peer_id
 from telethon.tl.functions.messages import EditMessageRequest, DeleteMessagesRequest, SendReactionRequest
 from telethon.tl.types import ReactionEmoji
@@ -49,6 +50,16 @@ class AgentTools:
 
         return self._admin_context.get()
 
+    @staticmethod
+    async def _send(coro_factory):
+        """Отправка с одним повтором после FloodWait (как send_with_flood_wait в main.py)."""
+        try:
+            return await coro_factory()
+        except errors.FloodWaitError as flood:
+            logger.warning("FloodWait %ss; жду и повторяю", flood.seconds)
+            await asyncio.sleep(flood.seconds + 1)
+            return await coro_factory()
+
     def _pc_allowed(self) -> bool:
         # Управление ПК: только Создатель и только в его личке/локальном меню.
         # В группе пакет сообщений идёт от имени первого автора, туда могут попасть чужие реплики.
@@ -67,7 +78,7 @@ class AgentTools:
             "7. update_my_profile: изменение имени и описания аккаунта."
             "\n8. list_dialogs / read_chat_history / search_telegram: работа с диалогами и историей."
             "\n9. open_on_pc / open_terminal / clipboard: управление ПК Создателя — сайты, ярлыки, папки в VS Code, "
-            "терминал с командой, буфер обмена (только Создатель в личке или локальном меню)."
+            "терминал с командой, буфер обмена, show_on_desktop — показать текст на экране (только Создатель в личке или локальном меню)."
         )
 
     async def execute_system_command(self, command: str) -> str:
@@ -308,12 +319,41 @@ class AgentTools:
                 await self.client.get_dialogs(limit=50)
                 entity = await self.client.get_entity(entity_target)
 
-            sent = await self.client.send_message(entity, message)
+            message = message[:4096]
+            sent = await self._send(lambda: self.client.send_message(entity, message))
             await self.db.save_message(0, "ada", message, chat_id=get_peer_id(entity),
                                        sender_name="Ада", tg_message_id=getattr(sent, "id", None))
             return f"Сообщение успешно отправлено в {target}."
         except Exception as e:
             return f"Ошибка отправки в {target}: {e}"
+
+    async def send_file(self, target: str, path: str, caption: str = "") -> str:
+        """Отправляет файл/фото с диска в чат (только Создатель: файл читается с его ПК)."""
+        if not self._pc_allowed():
+            return "Отправка файлов с компьютера доступна только Создателю в личном чате."
+        file = Path(path).resolve()
+        if not file.is_file():
+            return f"Файл не найден: {path}"
+        try:
+            entity = await self.client.get_entity(int(target) if str(target).lstrip('-').isdigit() else target)
+            caption = caption[:1024]
+            sent = await self._send(lambda: self.client.send_file(entity, str(file), caption=caption))
+            await self.db.save_message(0, "ada", f"[файл {file.name}] {caption}".strip(), chat_id=get_peer_id(entity),
+                                       sender_name="Ада", tg_message_id=getattr(sent, "id", None))
+            return f"Файл {file.name} отправлен в {target}."
+        except Exception as e:
+            return f"Не удалось отправить файл: {e}"
+
+    async def show_on_desktop(self, text: str) -> str:
+        """Показывает текст в окне оверлея на ПК Создателя."""
+        if not self._pc_allowed():
+            return "Вывод на экран ПК доступен только Создателю в личном чате."
+        # overlay импортирует tkinter; не импортируем сами — если модуля нет, окно не запущено.
+        overlay = sys.modules.get("overlay")
+        if overlay is None or overlay._events is None:
+            return "Окно на рабочем столе не запущено."
+        overlay.show_reply(text)
+        return "Показала на экране."
 
     async def edit_message(self, target: str, message_id: int, new_text: str) -> str:
         try:
@@ -334,7 +374,7 @@ class AgentTools:
     async def reply_to_message(self, target: str, message_id: int, message: str) -> str:
         try:
             entity = await self.client.get_entity(int(target) if str(target).lstrip('-').isdigit() else target)
-            sent = await self.client.send_message(entity, message[:4096], reply_to=int(message_id))
+            sent = await self._send(lambda: self.client.send_message(entity, message[:4096], reply_to=int(message_id)))
             await self.db.save_message(0, "ada", message[:4096], chat_id=get_peer_id(entity),
                                        sender_name="Ада", tg_message_id=getattr(sent, "id", None),
                                        reply_to_tg_id=int(message_id),

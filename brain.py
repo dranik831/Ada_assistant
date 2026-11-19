@@ -143,21 +143,10 @@ class Brain:
             if rules:
                 chat_rules_block = f"\n\n=== ЛОКАЛЬНЫЕ ПРАВИЛА ЧАТА ===\nПравила группы: {rules[:1500]}"
         secretary_rules = (
-            "Ты также секретарь Драника. При первом обращении нового человека поздоровайся: "
-            "«Здравствуйте, я секретарь Драника. Чтобы занять время встречи с ним или передать ему что-то, напишите мне». "
+            "Встречи с Создателем записывай через create_meeting_request. "
             "Не обещай встречу и не утверждай, что передала сообщение, пока инструмент не подтвердил это."
         )
         category = {"creator": "админ", "admin": "админ", "friend": "друг"}.get(user_row.get("status"), "стандарт")
-        creator_note = (
-            " Это Создатель проекта: обращайся с уважением и вниманием, но без заискивания — уважение задаётся настройкой, а не обожанием."
-            if is_admin else ""
-        )
-        category_rules = {
-            "стандарт": "Холодно, кратко и строго по делу.",
-            "друг": "Живо и с юмором, но с характером и границами.",
-            "админ": "Дружелюбно и внимательно; главный админ — Создатель.",
-        }[category]
-        category_rules += creator_note
         if is_group:
             silence_rule = (
                 "\n\n=== ПРАВО НА МОЛЧАНИЕ ===\n"
@@ -190,7 +179,7 @@ class Brain:
             f"{self.personality.get_prompt()}\n\n"
             f"=== ВРЕМЯ ===\n{time_info}\n\n"
             f"=== СОБЕСЕДНИК ===\nИмя: {user_row.get('first_name') or 'не указано'}; username: @{user_row.get('username') or 'нет'}; ID: {user_id}\n"
-            f"Категория: {category}; правило: {category_rules}\n"
+            f"Категория: {category}\n"
             f"Уважение: {respect_val}/100; доверие: {user_row.get('trust', 0)}/100; симпатия: {user_row.get('affection', 0)}/100\n"
             f"Создатель: {'ДА' if is_admin else 'НЕТ'}\n"
             f"Секретарский режим: {secretary_rules}{chat_rules_block}{silence_rule}\n\n"
