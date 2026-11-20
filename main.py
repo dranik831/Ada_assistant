@@ -208,7 +208,8 @@ async def describe_reply(reply_msg, my_id: int) -> str:
             author = display_name(await reply_msg.get_sender())
         except Exception:
             author = "Неизвестно"
-    body = reply_msg.text or ("[медиа]" if reply_msg.media else "")
+    label = await vision.media_label(reply_msg) if config.VISION_ENABLED else ""
+    body = f"{label} {reply_msg.text or ''}".strip() or ("[медиа]" if reply_msg.media else "")
     return f"{author}: «{_short(body, 500)}»"
 
 async def collect_message(event, sender_id: int, item: dict) -> list | None:

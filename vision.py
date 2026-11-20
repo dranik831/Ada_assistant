@@ -38,13 +38,16 @@ async def describe(raw: bytes, prompt: str) -> str:
                               timeout=config.VISION_TIMEOUT_SECONDS)
     url = "data:image/jpeg;base64," + base64.b64encode(_to_jpeg(raw)).decode()
     resp = await _client.chat.completions.create(
-        model=config.VISION_MODEL, max_tokens=600,
+        model=config.VISION_MODEL, max_tokens=4000,
         messages=[{"role": "user", "content": [
             {"type": "image_url", "image_url": {"url": url}},
             {"type": "text", "text": prompt},
         ]}],
     )
-    return (resp.choices[0].message.content or "").strip()
+    text = (resp.choices[0].message.content or "").strip()
+    if not text:
+        raise RuntimeError(f"vision-модель вернула пустой ответ ({resp.choices[0].finish_reason})")
+    return text
 
 
 async def media_label(message) -> str:
