@@ -18,6 +18,7 @@ from personality import PersonalityManager
 from tools import AgentTools
 from llm import UniversalAgent
 from brain import Brain, format_message_line
+import vision
 from autonomy import AutonomyEngine
 
 logging.basicConfig(
@@ -148,8 +149,9 @@ async def handle_local_request(text: str) -> str:
 def start_overlay():
     loop = asyncio.get_running_loop()
     import overlay
-    import whisper_transcribe
-    whisper_transcribe.preload()
+    if config.VOICE_ENABLED:
+        import whisper_transcribe
+        whisper_transcribe.preload()
 
     def on_submit(text: str):
         future = asyncio.run_coroutine_threadsafe(handle_local_request(text), loop)
@@ -166,7 +168,7 @@ def start_overlay():
         future = asyncio.run_coroutine_threadsafe(whisper_transcribe.transcribe(wav), loop)
         return future.result(timeout=90)
 
-    overlay.start(on_submit, transcribe)
+    overlay.start(on_submit, transcribe if config.VOICE_ENABLED else None)
 
 async def send_with_flood_wait(coro_factory):
     """Выполняет отправку, выдерживая FloodWait один раз."""
@@ -594,6 +596,9 @@ async def on_incoming_message(event):
     if event.message.voice or event.message.audio or event.message.video_note:
         await event.reply("Я не могу прослушивать голосовые и звонки. Напиши это текстом — так будет удобнее.")
         return
+    if config.VISION_ENABLED and (event.is_private or event.message.mentioned):
+        label = await vision.media_label(event.message)
+        text = f"{label} {text}".strip() if label else text
     if not text:
         return
 

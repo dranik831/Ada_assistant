@@ -646,6 +646,86 @@ class AgentTools:
         return "Кэш расписания обновлён:\n" + schedule_api.format_schedule(data)[:3500]
 
 
+    def _fetch_email(self, limit: int, unread_only: bool, query: str) -> str:
+        import imaplib, email
+        from email.header import decode_header, make_header
+        dec = lambda v: str(make_header(decode_header(v or "")))
+        box = imaplib.IMAP4_SSL(config.EMAIL_IMAP_HOST)
+        try:
+            box.login(config.EMAIL_USER, config.EMAIL_PASSWORD)
+            box.select("INBOX", readonly=True)
+            crit = ["UNSEEN"] if unread_only else ["ALL"]
+            if query:
+                crit += ["TEXT", f'"{query.replace(chr(34), "")}"']
+            _, data = box.search("UTF-8", *crit)
+            ids = data[0].split()[-limit:][::-1]
+            out = []
+            for i in ids:
+                _, msg = box.fetch(i, "(BODY.PEEK[])")
+                m = email.message_from_bytes(msg[0][1])
+                part = next((p for p in m.walk() if p.get_content_type() == "text/plain"), None)
+                body = part.get_payload(decode=True).decode(part.get_content_charset() or "utf-8", "replace") if part else ""
+                out.append(f"От: {dec(m['From'])}\nТема: {dec(m['Subject'])}\nДата: {m['Date']}\n{body.strip()[:1500]}")
+            return "\n\n---\n".join(out) or "Писем нет."
+        finally:
+            try:
+                box.logout()
+            except Exception:
+                pass
+
+    def fetch_new_emails(self, last_uid: int) -> tuple[list[dict], int]:
+        """Письма с UID > last_uid. При last_uid < 0 только возвращает текущий максимальный UID."""
+        import imaplib, email
+        from email.header import decode_header, make_header
+        dec = lambda v: str(make_header(decode_header(v or "")))
+        box = imaplib.IMAP4_SSL(config.EMAIL_IMAP_HOST)
+        try:
+            box.login(config.EMAIL_USER, config.EMAIL_PASSWORD)
+            box.select("INBOX", readonly=True)
+            _, data = box.uid("search", None, "ALL" if last_uid < 0 else f"UID {last_uid + 1}:*")
+            uids = sorted(int(u) for u in data[0].split())
+            if last_uid < 0:
+                return [], (uids[-1] if uids else 0)
+            uids = [u for u in uids if u > last_uid][:5]
+            out = []
+            for u in uids:
+                _, msg = box.uid("fetch", str(u), "(BODY.PEEK[])")
+                m = email.message_from_bytes(msg[0][1])
+                part = next((p for p in m.walk() if p.get_content_type() == "text/plain"), None)
+                body = part.get_payload(decode=True).decode(part.get_content_charset() or "utf-8", "replace") if part else ""
+                out.append({"uid": u, "from": dec(m["From"]), "subject": dec(m["Subject"]), "body": body.strip()[:2000]})
+            return out, (uids[-1] if uids else last_uid)
+        finally:
+            try:
+                box.logout()
+            except Exception:
+                pass
+
+    async def read_email(self, limit: int = 5, unread_only: bool = True, query: str = "") -> str:
+        if not self._is_admin():
+            return "Читать почту может только Создатель."
+        if not (config.EMAIL_USER and config.EMAIL_PASSWORD):
+            return "Почта не настроена: заполни EMAIL_USER и EMAIL_PASSWORD в .env."
+        try:
+            return await asyncio.to_thread(self._fetch_email, max(1, min(int(limit), 15)), bool(unread_only), query)
+        except Exception as e:
+            logger.exception("Ошибка чтения почты")
+            return f"Не удалось прочитать почту: {type(e).__name__}"
+
+    async def look_at_screen(self, question: str = "") -> str:
+        if not self._is_admin():
+            return "Смотреть на экран может только Создатель."
+        if not config.VISION_ENABLED:
+            return "Зрение отключено: VISION_ENABLED=false в .env."
+        import vision
+        try:
+            shot = await asyncio.to_thread(vision.grab_screen)
+            prompt = (question or "Что сейчас на экране?") + " Отвечай по-русски. Если на экране есть важный текст, процитируй его."
+            return await vision.describe(shot, prompt) or "Модель ничего не ответила."
+        except Exception as e:
+            logger.exception("Ошибка look_at_screen")
+            return f"Не удалось посмотреть на экран: {type(e).__name__}"
+
     async def create_meeting_request(self, requester_id: int, requester_name: str, purpose: str,
                                     preferred_time: str = "") -> str:
         async with __import__("aiosqlite").connect(self.db.db_path) as db:

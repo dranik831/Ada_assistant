@@ -246,7 +246,8 @@ def _ui_loop(events: queue.Queue, on_submit, transcribe):
                    and root.focus_get() is None and not recorder.active else None)
 
     entry.bind("<Return>", submit)
-    entry.bind("<Control-Alt-space>", toggle_voice)
+    if transcribe:
+        entry.bind("<Control-Alt-space>", toggle_voice)
     entry.bind("<Escape>", hide)
     entry.bind("<FocusOut>", on_focus_out)
     close.bind("<Button-1>", hide)

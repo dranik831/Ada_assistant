@@ -30,6 +30,16 @@ LLM_MODEL=gpt-4o-mini
 LLM_TIMEOUT_SECONDS=45
 LLM_STARTUP_TIMEOUT_SECONDS=12
 
+# Голосовое управление (Ctrl+Alt+Space). false = Whisper не загружается
+VOICE_ENABLED=true
+
+# Зрение: локальная vision-модель через OpenAI-совместимый сервер (Ollama: http://localhost:11434/v1)
+VISION_ENABLED=false
+VISION_BASE_URL=http://localhost:11434/v1
+VISION_MODEL=qwen3-vl:2b
+VISION_API_KEY=
+VISION_TIMEOUT_SECONDS=120
+
 # Распознавание речи: local (Whisper medium на компе) или api (внешний сервер)
 WHISPER_MODE=local
 WHISPER_API_URL=
@@ -56,6 +66,11 @@ QUIET_HOURS_END=8
 # Расписание УКРТБ (study.ukrtb.ru)
 UKRTB_GROUP_ID=
 UKRTB_GROUP_LABEL=
+
+# Почта (IMAP, только чтение). Для Gmail/Яндекс/Mail.ru нужен пароль приложения
+EMAIL_IMAP_HOST=imap.gmail.com
+EMAIL_USER=
+EMAIL_PASSWORD=
 
 # Белый список системных команд (через запятую, пусто = любые)
 SYSTEM_COMMAND_ALLOWLIST=
@@ -142,6 +157,9 @@ QUIET_HOURS_END = int(os.getenv("QUIET_HOURS_END", "8"))
 
 # Учебный портал УКРТБ (study.ukrtb.ru): расписание занятий.
 UKRTB_GROUP_ID = os.getenv("UKRTB_GROUP_ID", "bf399ce2-089f-11f1-9b37-864d651ef868").strip()
+EMAIL_IMAP_HOST = os.getenv("EMAIL_IMAP_HOST", "imap.gmail.com").strip()
+EMAIL_USER = os.getenv("EMAIL_USER", "").strip()
+EMAIL_PASSWORD = os.getenv("EMAIL_PASSWORD", "").strip()
 UKRTB_GROUP_LABEL = os.getenv("UKRTB_GROUP_LABEL", "ССА-17-26П").strip()
 
 # Белый список системных команд (через запятую). Пусто = разрешены любые
@@ -158,6 +176,12 @@ CONTEXT_CHATS = max(1, int(os.getenv("CONTEXT_CHATS", "3")))
 CONTEXT_MESSAGES_PER_CHAT = max(1, int(os.getenv("CONTEXT_MESSAGES_PER_CHAT", "10")))
 
 # Распознавание речи
+VOICE_ENABLED = os.getenv("VOICE_ENABLED", "true").lower() == "true"
+VISION_ENABLED = os.getenv("VISION_ENABLED", "false").lower() == "true"
+VISION_BASE_URL = os.getenv("VISION_BASE_URL", "http://localhost:11434/v1").strip()
+VISION_MODEL = os.getenv("VISION_MODEL", "qwen3-vl:2b").strip()
+VISION_API_KEY = os.getenv("VISION_API_KEY", "").strip()
+VISION_TIMEOUT_SECONDS = max(5, int(os.getenv("VISION_TIMEOUT_SECONDS", "120")))
 WHISPER_MODE = os.getenv("WHISPER_MODE", "local").strip().lower()
 WHISPER_API_URL = os.getenv("WHISPER_API_URL", "").strip()
 WHISPER_API_KEY = os.getenv("WHISPER_API_KEY", "").strip()
