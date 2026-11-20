@@ -61,6 +61,8 @@ _pending_messages: dict[tuple[int, int], dict] = {}
 _message_locks = defaultdict(asyncio.Lock)
 _group_last_reply: dict[int, float] = {}
 _group_batches: dict[int, dict] = {}
+GROUP_FOLLOWUP_MESSAGES = 2
+_group_followups: dict[int, int] = {}
 _group_batch_locks = defaultdict(asyncio.Lock)
 _chat_processing_locks = defaultdict(asyncio.Lock)
 
@@ -693,6 +695,9 @@ async def on_incoming_message(event):
             or may_join_group(event.chat_id)
         ):
             should_reply = True
+        elif _group_followups.get(event.chat_id, 0) > 0:
+            _group_followups[event.chat_id] -= 1
+            should_reply = True
 
     # Пересылка отмечается прямо в тексте, чтобы пометка сохранилась в истории.
     stored_text = text
@@ -769,6 +774,7 @@ async def on_incoming_message(event):
         return
     if not event.is_private:
         _group_last_reply[event.chat_id] = asyncio.get_running_loop().time()
+        _group_followups[event.chat_id] = GROUP_FOLLOWUP_MESSAGES
     # Ада отвечает реплаем на сообщение event — его и сохраняем как цитату.
     answered_desc = f"{sender_name}: «{_short(item['text'], 200)}»"
     for reply_text in reply_messages[:6]:
