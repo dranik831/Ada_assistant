@@ -21,6 +21,7 @@ from telethon.tl.types import User
 from telethon.tl.functions.account import UpdateProfileRequest
 from database import Database
 import config
+import module_system
 import schedule_api
 
 logger = logging.getLogger("Ada.Tools")
@@ -66,8 +67,8 @@ class AgentTools:
         return self._is_admin() and self._chat_context.get() > 0
 
     async def list_my_capabilities(self) -> str:
-        """Возвращает перечень доступных возможностей Ады."""
-        return (
+        """Возвращает перечень доступных возможностей Ады, включая подключённые модули."""
+        base = (
             "Мои инструменты:\n"
             "1. execute_system_command: выполнение команд в терминале ОС (только Создатель).\n"
             "2. read_file / write_file / list_directory: работа с файлами на компьютере.\n"
@@ -80,6 +81,10 @@ class AgentTools:
             "\n9. open_on_pc / open_terminal / clipboard: управление ПК Создателя — сайты, ярлыки, папки в VS Code, "
             "терминал с командой, буфер обмена, show_on_desktop — показать текст на экране (только Создатель в личке или локальном меню)."
         )
+        extras = module_system.registry().capabilities()
+        if extras:
+            base += "\n\nИз подключённых модулей:\n" + "\n".join(f"— {item}" for item in extras)
+        return base
 
     async def execute_system_command(self, command: str) -> str:
         """Выполняет системную команду в PowerShell/Bash. Доступно только Создателю."""
@@ -711,20 +716,6 @@ class AgentTools:
         except Exception as e:
             logger.exception("Ошибка чтения почты")
             return f"Не удалось прочитать почту: {type(e).__name__}"
-
-    async def look_at_screen(self, question: str = "") -> str:
-        if not self._is_admin():
-            return "Смотреть на экран может только Создатель."
-        if not config.VISION_ENABLED:
-            return "Зрение отключено: VISION_ENABLED=false в .env."
-        import vision
-        try:
-            shot = await asyncio.to_thread(vision.grab_screen)
-            prompt = (question or "Что сейчас на экране?") + " Отвечай по-русски. Если на экране есть важный текст, процитируй его."
-            return await vision.describe(shot, prompt) or "Модель ничего не ответила."
-        except Exception as e:
-            logger.exception("Ошибка look_at_screen")
-            return f"Не удалось посмотреть на экран: {type(e).__name__}"
 
     async def create_meeting_request(self, requester_id: int, requester_name: str, purpose: str,
                                     preferred_time: str = "") -> str:

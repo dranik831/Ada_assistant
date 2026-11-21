@@ -5,6 +5,7 @@ import re
 from openai import AsyncOpenAI, APIConnectionError, APITimeoutError, APIStatusError, RateLimitError
 from tools import AgentTools
 import config
+import module_system
 
 logger = logging.getLogger("Ada.LLM")
 
@@ -78,7 +79,6 @@ class UniversalAgent:
             "get_college_schedule": self.tools.get_college_schedule,
             "refresh_my_schedule_cache": self.tools.refresh_my_schedule_cache,
             "read_email": self.tools.read_email,
-            "look_at_screen": self.tools.look_at_screen,
             "create_meeting_request": self.tools.create_meeting_request,
             "list_meeting_requests": self.tools.list_meeting_requests,
             "set_person_category": self.tools.set_person_category,
@@ -88,6 +88,8 @@ class UniversalAgent:
             "open_terminal": self.tools.open_terminal,
             "clipboard": self.tools.clipboard,
         }
+        # Инструменты подключённых модулей добавляются к встроенным.
+        self.tool_functions.update(module_system.registry().tool_functions())
 
 
     async def _completion(self, *, startup=False, **kwargs):
@@ -294,7 +296,6 @@ class UniversalAgent:
             action("get_college_schedule", "Расписание колледжа УКРТБ на дату: 'сегодня', 'завтра' или YYYY-MM-DD; query — название группы, преподавателя или аудитории (пусто — группа Создателя).", {"when": {"type": "string"}, "query": {"type": "string"}}, []),
             action("refresh_my_schedule_cache", "Обновить локальный кэш расписания группы УКРТБ с сайта.", {}, []),
             action("read_email", "Прочитать письма из почты Создателя (только чтение). unread_only — только непрочитанные, query — поиск по отправителю/теме. Только Создатель.", {"limit": {"type": "integer"}, "unread_only": {"type": "boolean"}, "query": {"type": "string"}}, []),
-            action("look_at_screen", "Сделать скриншот рабочего стола Создателя и посмотреть на него. question — что именно нужно понять или найти на экране. Вызывай, когда Создатель просит посмотреть на экран или подсказать по тому, что на нём. Только Создатель.", {"question": {"type": "string"}}, []),
             action("delete_calendar_event", "Удалить встречу по ID.", {"event_id": {"type": "integer"}}, ["event_id"]),
             action("create_meeting_request", "Сохранить запрос на встречу, не подтверждая её.", {"requester_id": {"type": "integer"}, "requester_name": {"type": "string"}, "purpose": {"type": "string"}, "preferred_time": {"type": "string"}}, ["requester_id", "requester_name", "purpose"]),
             action("list_meeting_requests", "Показать владельцу необработанные запросы на встречу.", {}, []),
@@ -305,6 +306,7 @@ class UniversalAgent:
             action("open_terminal", "ПК Создателя: открыть видимое окно терминала PowerShell в папке cwd и сразу выполнить command (необязательно). Только Создатель.", {"command": {"type": "string"}, "cwd": {"type": "string"}}, []),
             action("clipboard", "ПК Создателя: буфер обмена. action='get' — прочитать текст, 'set' — записать text. Только Создатель.", {"action": {"type": "string", "enum": ["get", "set"]}, "text": {"type": "string"}}, ["action"]),
         ])
+        specs.extend(module_system.registry().tool_specs())
         return specs
 
 

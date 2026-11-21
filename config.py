@@ -6,6 +6,7 @@ from dotenv import load_dotenv
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = BASE_DIR / "data"
 LOGS_DIR = BASE_DIR / "logs"
+MODULES_DIR = BASE_DIR / "modules"
 ENV_FILE = BASE_DIR / ".env"
 PERSONALITY_FILE = BASE_DIR / "personality.json"
 PERSONA_LOCAL_FILE = DATA_DIR / "persona_local.txt"  # локальное дополнение к характеру, не коммитится
@@ -30,7 +31,12 @@ LLM_MODEL=gpt-4o-mini
 LLM_TIMEOUT_SECONDS=45
 LLM_STARTUP_TIMEOUT_SECONDS=12
 
-# Голосовое управление (Ctrl+Alt+Space). false = Whisper не загружается
+# Модули из папки modules/ (имя папки = имя флага). false отключает модуль целиком,
+# вместе с его зависимостями: выключенный модуль не импортируется.
+MODULE_VOICE=true
+MODULE_VISION=false
+
+# Голосовое управление (Ctrl+Alt+Space). Модуль modules/voice
 VOICE_ENABLED=true
 
 # Зрение: локальная vision-модель через OpenAI-совместимый сервер (Ollama: http://localhost:11434/v1)

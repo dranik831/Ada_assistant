@@ -14,7 +14,7 @@ import threading
 import tkinter as tk
 import tkinter.font as tkfont
 
-import voice
+import module_system
 
 logger = logging.getLogger("Ada.Overlay")
 
@@ -71,6 +71,21 @@ def _hotkey_loop(events: queue.Queue):
             events.put("toggle")
 
 
+class _NoRecorder:
+    """Заглушка, когда модуль голоса выключен: окно работает, запись недоступна."""
+
+    active = False
+
+    def start(self):
+        raise OSError("модуль голоса выключен (MODULE_VOICE=false)")
+
+    def stop(self) -> bytes:
+        return b""
+
+    def cancel(self):
+        pass
+
+
 def _ui_loop(events: queue.Queue, on_submit, transcribe):
     ctypes.windll.shcore.SetProcessDpiAwareness(1)  # иначе Windows растягивает окно и текст мылится
     root = tk.Tk()
@@ -97,7 +112,8 @@ def _ui_loop(events: queue.Queue, on_submit, transcribe):
     hwnd = ctypes.windll.user32.GetParent(root.winfo_id())
     _apply_glass(hwnd)
 
-    recorder = voice.Recorder()
+    # Диктофон даёт модуль voice; без него голосовой ввод просто недоступен.
+    recorder = module_system.audio_recorder() or _NoRecorder()
     state = {"mode": "hidden", "anim": None, "angle": 0, "timer": None}  # mode: hidden | input | busy | reply
 
     def cancel_timer():

@@ -1,8 +1,4 @@
-"""База голосового управления: запись с микрофона через WinMM MCI (Windows, без зависимостей).
-
-Распознавание — UniversalAgent.transcribe (Gemini). Сейчас голос используется в локальном меню
-(overlay.py, Ctrl+Space); следующий шаг — голосовые из Telegram и активация по слову.
-"""
+"""Запись с микрофона через WinMM MCI (Windows, без внешних зависимостей)."""
 import ctypes
 import tempfile
 from pathlib import Path

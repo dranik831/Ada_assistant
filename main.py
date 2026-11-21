@@ -18,7 +18,7 @@ from personality import PersonalityManager
 from tools import AgentTools
 from llm import UniversalAgent
 from brain import Brain, format_message_line
-import vision
+import module_system
 from autonomy import AutonomyEngine
 
 logging.basicConfig(
@@ -47,6 +47,11 @@ client = TelegramClient(
 )
 
 tools = AgentTools(db, client, emotions)
+
+# Модули из папки modules/ подключаются до создания агента: их инструменты
+# попадают в тот же реестр, который агент отдаёт модели.
+modules = module_system.load_modules(db=db, client=client, tools=tools, emotions=emotions)
+
 agent = UniversalAgent(tools)
 brain = Brain(db, emotions, personality, agent)
 
@@ -151,9 +156,6 @@ async def handle_local_request(text: str) -> str:
 def start_overlay():
     loop = asyncio.get_running_loop()
     import overlay
-    if config.VOICE_ENABLED:
-        import whisper_transcribe
-        whisper_transcribe.preload()
 
     def on_submit(text: str):
         future = asyncio.run_coroutine_threadsafe(handle_local_request(text), loop)
@@ -167,10 +169,11 @@ def start_overlay():
         future.add_done_callback(done)
 
     def transcribe(wav: bytes) -> str:
-        future = asyncio.run_coroutine_threadsafe(whisper_transcribe.transcribe(wav), loop)
-        return future.result(timeout=90)
+        future = asyncio.run_coroutine_threadsafe(module_system.transcribe_audio(wav), loop)
+        return future.result(timeout=90) or ""
 
-    overlay.start(on_submit, transcribe if config.VOICE_ENABLED else None)
+    # Голос появляется в меню только когда модуль voice подключён.
+    overlay.start(on_submit, transcribe if module_system.voice_available() else None)
 
 async def send_with_flood_wait(coro_factory):
     """Выполняет отправку, выдерживая FloodWait один раз."""
@@ -210,7 +213,7 @@ async def describe_reply(reply_msg, my_id: int) -> str:
             author = display_name(await reply_msg.get_sender())
         except Exception:
             author = "Неизвестно"
-    label = await vision.media_label(reply_msg) if config.VISION_ENABLED else ""
+    label = await module_system.media_label(reply_msg)
     body = f"{label} {reply_msg.text or ''}".strip() or ("[медиа]" if reply_msg.media else "")
     return f"{author}: «{_short(body, 500)}»"
 
@@ -367,6 +370,7 @@ async def edit_menu(event) -> None:
         "• эмоции — показать эмоции\n"
         "• эмоции <название> <0..100> — изменить эмоцию\n"
         "• состояние — показать аккаунт и текущие настройки\n"
+        "• модули — список модулей и их состояние\n"
         "• память — показать долговременную память\n"
         "• память добавить личное|группа|global <текст> — добавить точный факт\n"
 
@@ -431,10 +435,18 @@ async def handle_edit_mode(event, text: str) -> bool:
             await event.reply("Формат: эмоции <название> <0..100>")
         return True
     if command == "состояние":
+        active_modules = modules.active_names()
         await event.reply(
             f"Провайдер: {config.LLM_PROVIDER}\nМодель: {config.ACTIVE_LLM_MODEL}\n"
             f"Автономность: {await db.get_kv('autonomy_enabled', 'true')}\n"
+            f"Модули: {', '.join(active_modules) if active_modules else 'нет активных'}\n"
             f"Эмоции: {json.dumps(await emotions.get_state(), ensure_ascii=False)}"
+        )
+        return True
+    if command == "модули":
+        await event.reply(
+            modules.status_report()[:3900]
+            + "\n\nВключение и отключение — в .env (MODULE_<ИМЯ>=true/false), затем «перезапуск»."
         )
         return True
     if command == "перезапуск":
@@ -599,8 +611,8 @@ async def on_incoming_message(event):
     if event.message.voice or event.message.audio or event.message.video_note:
         await event.reply("Я не могу прослушивать голосовые и звонки. Напиши это текстом — так будет удобнее.")
         return
-    if config.VISION_ENABLED and (event.is_private or event.message.mentioned):
-        label = await vision.media_label(event.message)
+    if event.is_private or event.message.mentioned:
+        label = await module_system.media_label(event.message)
         text = f"{label} {text}".strip() if label else text
     if not text:
         return
@@ -874,6 +886,9 @@ async def main():
 
     await autonomy.start()
     print("[+] Модуль автономности активирован.")
+    await module_system.run_startup_hooks()
+    active_modules = modules.active_names()
+    print(f"[+] Модули: {', '.join(active_modules) if active_modules else 'нет активных'}")
     if os.name == "nt":
         start_overlay()
         print("[+] Локальное меню: Win+Shift+A")
@@ -881,6 +896,7 @@ async def main():
         await client.run_until_disconnected()
     finally:
         autonomy.stop()
+        await module_system.run_shutdown_hooks()
         if await db.get_kv("maintenance_restart", "false") != "true":
             await db.set_kv("maintenance_restart", "true")
             try:
