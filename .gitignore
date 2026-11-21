@@ -20,7 +20,7 @@ data/
 *.sqlite
 *.db
 .claude
-tests
+tests/
 
 # Файлы систем и IDE
 .vscode/

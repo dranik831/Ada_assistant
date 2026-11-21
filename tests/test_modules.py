@@ -83,8 +83,11 @@ def test_registration_and_isolation():
 
 
 def test_load_modules_reports_disabled():
-    os.environ["MODULE_VISION"] = "false"
-    os.environ["MODULE_VOICE"] = "false"
+    # Выключаем все известные модули, чтобы проверка не зависела от того,
+    # сколько модулей со свободным DEFAULT_ENABLED=True добавится в будущем.
+    flags = [f"MODULE_{module_system._env_name(name)}" for name in module_system.discover()]
+    for flag in flags:
+        os.environ[flag] = "false"
     try:
         registry = module_system.load_modules(db=None, client=None, tools=None, emotions=None)
         assert registry.active_names() == []
@@ -101,8 +104,8 @@ def test_load_modules_reports_disabled():
         asyncio.run(module_system.run_startup_hooks())
         asyncio.run(module_system.run_shutdown_hooks())
     finally:
-        os.environ.pop("MODULE_VISION", None)
-        os.environ.pop("MODULE_VOICE", None)
+        for flag in flags:
+            os.environ.pop(flag, None)
 
 
 if __name__ == "__main__":
