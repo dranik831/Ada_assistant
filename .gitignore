@@ -19,6 +19,8 @@ logs/
 data/
 *.sqlite
 *.db
+.claude
+tests
 
 # Файлы систем и IDE
 .vscode/
