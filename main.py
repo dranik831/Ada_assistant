@@ -737,6 +737,9 @@ async def on_incoming_message(event):
     if is_muted == "true" and not is_admin:
         return
 
+    # Модули могут добавить свой контекст к сообщению (хук message_context).
+    chat_context += await module_system.message_context(event.message)
+
     if event.is_private:
         items = await collect_message(event, sender.id, item)
         if items is None:
