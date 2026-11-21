@@ -153,14 +153,15 @@ async def handle_local_request(text: str) -> str:
     await db.save_message(0, "ada", answer, chat_id=admin_id, sender_name="Ада")
     return answer
 
-def start_overlay():
+def start_overlay() -> bool:
+    """Локальное меню ПК (Ctrl+Alt+A) предоставляет модуль pc_control; False, если он выключен."""
     loop = asyncio.get_running_loop()
-    import overlay
 
     def on_submit(text: str):
         future = asyncio.run_coroutine_threadsafe(handle_local_request(text), loop)
 
         def done(f):
+            from modules.pc_control import overlay
             if f.exception():
                 logger.error("Локальный запрос упал: %s", f.exception())
                 overlay.show_reply(f"Что-то сломалось: {f.exception()}")
@@ -173,7 +174,7 @@ def start_overlay():
         return future.result(timeout=90) or ""
 
     # Голос появляется в меню только когда модуль voice подключён.
-    overlay.start(on_submit, transcribe if module_system.voice_available() else None)
+    return module_system.start_local_menu(on_submit, transcribe if module_system.voice_available() else None)
 
 async def send_with_flood_wait(coro_factory):
     """Выполняет отправку, выдерживая FloodWait один раз."""
@@ -892,9 +893,8 @@ async def main():
     await module_system.run_startup_hooks()
     active_modules = modules.active_names()
     print(f"[+] Модули: {', '.join(active_modules) if active_modules else 'нет активных'}")
-    if os.name == "nt":
-        start_overlay()
-        print("[+] Локальное меню: Win+Shift+A")
+    if os.name == "nt" and start_overlay():
+        print("[+] Локальное меню: Ctrl+Alt+A")
     try:
         await client.run_until_disconnected()
     finally:

@@ -43,52 +43,18 @@ class UniversalAgent:
 
         self.tool_functions = {
             "list_my_capabilities": self.tools.list_my_capabilities,
-            "execute_system_command": self.tools.execute_system_command,
-            "read_file": self.tools.read_file,
-            "write_file": self.tools.write_file,
-            "list_directory": self.tools.list_directory,
             "fetch_web_page": self.tools.fetch_web_page,
             "update_my_profile": self.tools.update_my_profile,
-            "find_contact": self.tools.find_contact,
             "send_message_to_user": self.tools.send_message_to_user,
-            "edit_message": self.tools.edit_message,
-            "delete_message": self.tools.delete_message,
-            "reply_to_message": self.tools.reply_to_message,
             "send_file": self.tools.send_file,
-            "show_on_desktop": self.tools.show_on_desktop,
-            "react_to_message": self.tools.react_to_message,
-            "forward_message": self.tools.forward_message,
-            "pin_message": self.tools.pin_message,
-            "mark_chat_read": self.tools.mark_chat_read,
-            "get_group_members": self.tools.get_group_members,
-            "get_chat_info": self.tools.get_chat_info,
-            "list_dialogs": self.tools.list_dialogs,
-            "read_chat_history": self.tools.read_chat_history,
-            "search_telegram": self.tools.search_telegram,
             "search_memory": self.tools.search_memory,
             "search_scoped_memory": self.tools.search_scoped_memory,
-
-            "create_reminder": self.tools.create_reminder,
-            "add_calendar_event": self.tools.add_calendar_event,
-            "list_calendar_events": self.tools.list_calendar_events,
-            "import_schedule_json": self.tools.import_schedule_json,
-            "read_schedule": self.tools.read_schedule,
-            "list_tasks": self.tools.list_tasks,
-            "delete_calendar_event": self.tools.delete_calendar_event,
-            "cancel_task": self.tools.cancel_task,
-            "get_college_schedule": self.tools.get_college_schedule,
-            "refresh_my_schedule_cache": self.tools.refresh_my_schedule_cache,
-            "read_email": self.tools.read_email,
-            "create_meeting_request": self.tools.create_meeting_request,
-            "list_meeting_requests": self.tools.list_meeting_requests,
             "set_person_category": self.tools.set_person_category,
             "set_person_respect": self.tools.set_person_respect,
             "set_mood": self.tools.set_mood,
-            "open_on_pc": self.tools.open_on_pc,
-            "open_terminal": self.tools.open_terminal,
-            "clipboard": self.tools.clipboard,
         }
-        # Инструменты подключённых модулей добавляются к встроенным.
+        # Инструменты подключённых модулей добавляются к встроенным: туда входят
+        # все Telegram/ПК/секретарские/почтовые/расписные инструменты.
         self.tool_functions.update(module_system.registry().tool_functions())
 
 
@@ -120,192 +86,38 @@ class UniversalAgent:
             return False
 
     def _get_tools_spec(self) -> list:
-        specs = [
-            {
-                "type": "function",
-                "function": {
-                    "name": "list_my_capabilities",
-                "description": "Получить список возможностей Ады.",
-                "parameters": {"type": "object", "properties": {}}
-                }
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "list_dialogs",
-                    "description": "Получить список последних диалогов Telegram.",
-                    "parameters": {"type": "object", "properties": {"limit": {"type": "integer"}}}
-                }
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "read_chat_history",
-                    "description": "Прочитать последние сообщения личного чата или группы.",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {"target": {"type": "string"}, "limit": {"type": "integer"}},
-                        "required": ["target"]
-                    }
-                }
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "search_telegram",
-                    "description": "Найти сообщения в доступной истории Telegram.",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {"query": {"type": "string"}, "limit": {"type": "integer"}},
-                        "required": ["query"]
-                    }
-                }
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "execute_system_command",
-                    "description": "Выполнить системную команду в PowerShell/CMD/Bash (только для Создателя).",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {"command": {"type": "string"}},
-                        "required": ["command"]
-                    }
-                }
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "read_file",
-                    "description": "Прочитать текстовый файл с диска.",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {"path": {"type": "string"}},
-                        "required": ["path"]
-                    }
-                }
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "write_file",
-                    "description": "Записать файл на диск (только для Создателя).",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {"path": {"type": "string"}, "content": {"type": "string"}},
-                        "required": ["path", "content"]
-                    }
-                }
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "list_directory",
-                    "description": "Посмотреть файлы и папки в каталоге.",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {"path": {"type": "string"}}
-                    }
-                }
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "fetch_web_page",
-                    "description": "Прочитать статью или текст по интернет-ссылке (URL).",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {"url": {"type": "string"}},
-                        "required": ["url"]
-                    }
-                }
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "update_my_profile",
-                    "description": "Сменить имя или био в Telegram.",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {"first_name": {"type": "string"}, "about": {"type": "string"}}
-                    }
-                }
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "find_contact",
-                    "description": "Найти человека в Telegram или базе данных.",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {"query": {"type": "string"}},
-                        "required": ["query"]
-                    }
-                }
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "send_message_to_user",
-                    "description": "Отправить сообщение пользователю или в группу.",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {"target": {"type": "string"}, "message": {"type": "string"}},
-                        "required": ["target", "message"]
-                    }
-                }
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "search_memory",
-                    "description": "Поиск по сохраненным воспоминаниям.",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {"query": {"type": "string"}},
-                        "required": ["query"]
-                    }
-                }
-            }
-        ]
         def action(name, description, properties, required):
             return {"type": "function", "function": {"name": name, "description": description,
                 "parameters": {"type": "object", "properties": properties, "required": required}}}
-        target_id = {"target": {"type": "string"}, "message_id": {"type": "integer"}}
-        specs.extend([
-            action("edit_message", "Отредактировать своё сообщение.", {**target_id, "new_text": {"type": "string"}}, ["target", "message_id", "new_text"]),
-            action("delete_message", "Удалить сообщение.", {**target_id, "revoke": {"type": "boolean"}}, ["target", "message_id"]),
-            action("reply_to_message", "Ответить на конкретное сообщение.", {**target_id, "message": {"type": "string"}}, ["target", "message_id", "message"]),
-            action("send_file", "Отправить файл или фото с ПК Создателя в чат (target — id или юзернейм), caption — подпись. Только Создатель.", {"target": {"type": "string"}, "path": {"type": "string"}, "caption": {"type": "string"}}, ["target", "path"]),
-            action("show_on_desktop", "ПК Создателя: показать текст в окне на рабочем столе (в Telegram не отправляется). Только Создатель.", {"text": {"type": "string"}}, ["text"]),
-            action("react_to_message", "Поставить реакцию.", {**target_id, "reaction": {"type": "string"}}, ["target", "message_id"]),
-            action("forward_message", "Переслать сообщение.", {**target_id, "destination": {"type": "string"}}, ["target", "message_id", "destination"]),
-            action("pin_message", "Закрепить сообщение.", {**target_id, "notify": {"type": "boolean"}}, ["target", "message_id"]),
-            action("mark_chat_read", "Отметить чат прочитанным.", {"target": {"type": "string"}}, ["target"]),
-            action("get_group_members", "Получить участников группы.", {"target": {"type": "string"}, "limit": {"type": "integer"}}, ["target"]),
-            action("get_chat_info", "Получить информацию о чате.", {"target": {"type": "string"}}, ["target"]),
 
-            action("search_scoped_memory", "Искать в контекстной памяти.", {"query": {"type": "string"}, "owner_id": {"type": "integer"}, "chat_id": {"type": "integer"}}, ["query"]),
-            action("create_reminder", "Создать напоминание в ISO-времени; repeat_rule — daily, weekly или weekdays для повторяющихся. В срок тебе придёт служебный пинок с этим description, поэтому пиши его как инструкцию себе: что именно сделать и какими инструментами (например: «Вызови get_college_schedule на сегодня и отправь Создателю само расписание»).", {"owner_id": {"type": "integer"}, "description": {"type": "string"}, "due_at": {"type": "string"}, "chat_id": {"type": "integer"}, "repeat_rule": {"type": "string"}}, ["owner_id", "description", "due_at"]),
-            action("add_calendar_event", "Добавить событие в календарь владельца.", {"owner_id": {"type": "integer"}, "title": {"type": "string"}, "start_at": {"type": "string"}, "end_at": {"type": "string"}, "details": {"type": "string"}}, ["owner_id", "title", "start_at"]),
-            action("list_calendar_events", "Показать события календаря.", {"from_at": {"type": "string"}, "to_at": {"type": "string"}}, []),
-            action("import_schedule_json", "Импортировать расписание из JSON.", {"content": {"type": "string"}}, ["content"]),
-            action("read_schedule", "Прочитать импортированное расписание.", {}, []),
-            action("list_tasks", "Показать активные напоминания.", {"owner_id": {"type": "integer"}}, []),
-            action("cancel_task", "Отменить напоминание по ID (только Создатель).", {"task_id": {"type": "integer"}}, ["task_id"]),
-            action("get_college_schedule", "Расписание колледжа УКРТБ на дату: 'сегодня', 'завтра' или YYYY-MM-DD; query — название группы, преподавателя или аудитории (пусто — группа Создателя).", {"when": {"type": "string"}, "query": {"type": "string"}}, []),
-            action("refresh_my_schedule_cache", "Обновить локальный кэш расписания группы УКРТБ с сайта.", {}, []),
-            action("read_email", "Прочитать письма из почты Создателя (только чтение). unread_only — только непрочитанные, query — поиск по отправителю/теме. Только Создатель.", {"limit": {"type": "integer"}, "unread_only": {"type": "boolean"}, "query": {"type": "string"}}, []),
-            action("delete_calendar_event", "Удалить встречу по ID.", {"event_id": {"type": "integer"}}, ["event_id"]),
-            action("create_meeting_request", "Сохранить запрос на встречу, не подтверждая её.", {"requester_id": {"type": "integer"}, "requester_name": {"type": "string"}, "purpose": {"type": "string"}, "preferred_time": {"type": "string"}}, ["requester_id", "requester_name", "purpose"]),
-            action("list_meeting_requests", "Показать владельцу необработанные запросы на встречу.", {}, []),
-            action("set_person_category", "Самостоятельно изменить категорию текущего собеседника по устойчивому поведению; нельзя назначать админа или менять Создателя.", {"user_id": {"type": "integer"}, "category": {"type": "string"}}, ["user_id", "category"]),
-            action("set_person_respect", "Самостоятельно изменить уважение к текущему собеседнику (0..100) с учётом его поведения; Создатель неизменен.", {"user_id": {"type": "integer"}, "respect": {"type": "integer"}}, ["user_id", "respect"]),
-            action("set_mood", "Самостоятельно изменить собственную эмоцию (0..100) в ответ на ситуацию.", {"emotion": {"type": "string"}, "value": {"type": "integer"}}, ["emotion", "value"]),
-            action("open_on_pc", "ПК Создателя: открыть сайт (URL), ярлык с рабочего стола (по имени), файл или папку. app='vscode' — открыть папку/файл в VS Code. Только Создатель.", {"target": {"type": "string"}, "app": {"type": "string"}}, ["target"]),
-            action("open_terminal", "ПК Создателя: открыть видимое окно терминала PowerShell в папке cwd и сразу выполнить command (необязательно). Только Создатель.", {"command": {"type": "string"}, "cwd": {"type": "string"}}, []),
-            action("clipboard", "ПК Создателя: буфер обмена. action='get' — прочитать текст, 'set' — записать text. Только Создатель.", {"action": {"type": "string", "enum": ["get", "set"]}, "text": {"type": "string"}}, ["action"]),
-        ])
+        specs = [
+            action("list_my_capabilities", "Получить список возможностей Ады.", {}, []),
+            action("fetch_web_page", "Прочитать статью или текст по интернет-ссылке (URL).",
+                   {"url": {"type": "string"}}, ["url"]),
+            action("update_my_profile", "Сменить имя или био в Telegram.",
+                   {"first_name": {"type": "string"}, "about": {"type": "string"}}, []),
+            action("send_message_to_user", "Отправить сообщение пользователю или в группу.",
+                   {"target": {"type": "string"}, "message": {"type": "string"}}, ["target", "message"]),
+            action("send_file", "Отправить файл или фото с ПК Создателя в чат (target — id или юзернейм), "
+                   "caption — подпись. Только Создатель.",
+                   {"target": {"type": "string"}, "path": {"type": "string"}, "caption": {"type": "string"}},
+                   ["target", "path"]),
+            action("search_memory", "Поиск по сохраненным воспоминаниям.",
+                   {"query": {"type": "string"}}, ["query"]),
+            action("search_scoped_memory", "Искать в контекстной памяти.",
+                   {"query": {"type": "string"}, "owner_id": {"type": "integer"}, "chat_id": {"type": "integer"}},
+                   ["query"]),
+            action("set_person_category", "Самостоятельно изменить категорию текущего собеседника по устойчивому "
+                   "поведению; нельзя назначать админа или менять Создателя.",
+                   {"user_id": {"type": "integer"}, "category": {"type": "string"}}, ["user_id", "category"]),
+            action("set_person_respect", "Самостоятельно изменить уважение к текущему собеседнику (0..100) с "
+                   "учётом его поведения; Создатель неизменен.",
+                   {"user_id": {"type": "integer"}, "respect": {"type": "integer"}}, ["user_id", "respect"]),
+            action("set_mood", "Самостоятельно изменить собственную эмоцию (0..100) в ответ на ситуацию.",
+                   {"emotion": {"type": "string"}, "value": {"type": "integer"}}, ["emotion", "value"]),
+        ]
+        # Остальные инструменты (Telegram, ПК, секретарь, почта, расписание, зрение, голос)
+        # приходят из подключённых модулей — см. modules/README.md.
         specs.extend(module_system.registry().tool_specs())
         return specs
 

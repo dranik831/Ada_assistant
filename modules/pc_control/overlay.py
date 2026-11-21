@@ -33,6 +33,21 @@ REPLY_MS = 10_000     # сколько ответ висит на экране
 _events: queue.Queue | None = None
 
 
+class NoRecorder:
+    """Заглушка, когда модуль голоса выключен: окно работает, запись недоступна."""
+
+    active = False
+
+    def start(self):
+        raise OSError("модуль голоса выключен (MODULE_VOICE=false)")
+
+    def stop(self) -> bytes:
+        return b""
+
+    def cancel(self):
+        pass
+
+
 class _AccentPolicy(ctypes.Structure):
     _fields_ = [("AccentState", ctypes.c_int), ("AccentFlags", ctypes.c_int),
                 ("GradientColor", ctypes.c_uint), ("AnimationId", ctypes.c_int)]
@@ -71,21 +86,6 @@ def _hotkey_loop(events: queue.Queue):
             events.put("toggle")
 
 
-class _NoRecorder:
-    """Заглушка, когда модуль голоса выключен: окно работает, запись недоступна."""
-
-    active = False
-
-    def start(self):
-        raise OSError("модуль голоса выключен (MODULE_VOICE=false)")
-
-    def stop(self) -> bytes:
-        return b""
-
-    def cancel(self):
-        pass
-
-
 def _ui_loop(events: queue.Queue, on_submit, transcribe):
     ctypes.windll.shcore.SetProcessDpiAwareness(1)  # иначе Windows растягивает окно и текст мылится
     root = tk.Tk()
@@ -113,7 +113,7 @@ def _ui_loop(events: queue.Queue, on_submit, transcribe):
     _apply_glass(hwnd)
 
     # Диктофон даёт модуль voice; без него голосовой ввод просто недоступен.
-    recorder = module_system.audio_recorder() or _NoRecorder()
+    recorder = module_system.audio_recorder() or NoRecorder()
     state = {"mode": "hidden", "anim": None, "angle": 0, "timer": None}  # mode: hidden | input | busy | reply
 
     def cancel_timer():

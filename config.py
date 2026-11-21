@@ -35,6 +35,11 @@ LLM_STARTUP_TIMEOUT_SECONDS=12
 # вместе с его зависимостями: выключенный модуль не импортируется.
 MODULE_VOICE=true
 MODULE_VISION=false
+MODULE_PC_CONTROL=true
+MODULE_TELEGRAM_TOOLS=true
+MODULE_SCHEDULE_COLLEGE=true
+MODULE_SECRETARY=true
+MODULE_EMAIL=false
 
 # Голосовое управление (Ctrl+Alt+Space). Модуль modules/voice
 VOICE_ENABLED=true

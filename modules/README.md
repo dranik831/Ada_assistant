@@ -92,10 +92,15 @@ def setup(ctx: ModuleContext) -> None:
 | `HOOK_MESSAGE_CONTEXT` | `async (message) -> str` | дополнительный контекст сообщения для промпта |
 | `HOOK_TRANSCRIBE` | `async (bytes, suffix) -> str` | речь в текст |
 | `HOOK_AUDIO_RECORDER` | `() -> recorder` | диктофон с `start/stop/cancel` и полем `active` |
+| `HOOK_AUTONOMY_TICK` | `async (autonomy: AutonomyEngine) -> None` | каждый цикл автономности (``AUTONOMY_CHECK_INTERVAL``) |
+| `HOOK_LOCAL_MENU` | `(on_submit, transcribe) -> bool` | запускает локальное меню ПК (Ctrl+Alt+A) |
 
-`HOOK_MEDIA_LABEL`, `HOOK_TRANSCRIBE` и `HOOK_AUDIO_RECORDER` берут результат первого
-модуля, который вернул непустое значение. `HOOK_STARTUP`, `HOOK_SHUTDOWN` и
-`HOOK_MESSAGE_CONTEXT` вызывают все подписанные модули.
+`HOOK_MEDIA_LABEL`, `HOOK_TRANSCRIBE`, `HOOK_AUDIO_RECORDER` и `HOOK_LOCAL_MENU` берут
+результат первого модуля, который вернул непустое значение. `HOOK_STARTUP`,
+`HOOK_SHUTDOWN`, `HOOK_MESSAGE_CONTEXT` и `HOOK_AUTONOMY_TICK` вызывают все подписанные
+модули. `autonomy` в `HOOK_AUTONOMY_TICK` — это `AutonomyEngine` (`autonomy.py`): даёт
+`autonomy.db`, `autonomy.brain`, `autonomy.send_message(user_id, text)` и
+`autonomy.is_quiet_time()` для периодических задач вроде напоминаний или проверки почты.
 
 ## Правила
 
@@ -112,3 +117,13 @@ def setup(ctx: ModuleContext) -> None:
 | --- | --- | --- |
 | `vision` | `MODULE_VISION` | описание фото и стикеров, инструмент `look_at_screen` |
 | `voice` | `MODULE_VOICE` | запись с микрофона и распознавание речи для локального меню |
+| `pc_control` | `MODULE_PC_CONTROL` | терминал, файлы, буфер обмена, открытие программ, локальное меню Ctrl+Alt+A |
+| `telegram_tools` | `MODULE_TELEGRAM_TOOLS` | диалоги, история, поиск, редактирование/удаление/реакции/пересылка/закрепление сообщений |
+| `schedule_college` | `MODULE_SCHEDULE_COLLEGE` | расписание колледжа УКРТБ и утренняя сводка Создателю |
+| `secretary` | `MODULE_SECRETARY` | личный календарь, импортированное расписание, напоминания, запросы на встречу |
+| `email` | `MODULE_EMAIL` | чтение почты Создателя по IMAP и уведомления о важных письмах |
+
+В ядре (`tools.py`) остаются: `fetch_web_page`, `send_message_to_user`, `send_file`,
+`update_my_profile`, память (`search_memory`, `search_scoped_memory`) и управление
+отношениями/настроением (`set_person_category`, `set_person_respect`, `set_mood`) —
+они тесно связаны с `brain.py`/`main.py` и используются почти всегда.

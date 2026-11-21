@@ -36,6 +36,8 @@ HOOK_MEDIA_LABEL = "media_label"          # async (telethon message) -> str; п�
 HOOK_TRANSCRIBE = "transcribe_audio"      # async (bytes, suffix) -> str; речь в текст
 HOOK_AUDIO_RECORDER = "audio_recorder"    # () -> recorder с методами start/stop/cancel и полем active
 HOOK_MESSAGE_CONTEXT = "message_context"  # async (telethon message) -> str; доп. контекст для промпта
+HOOK_AUTONOMY_TICK = "autonomy_tick"      # async (autonomy: AutonomyEngine) -> None; каждый цикл автономности
+HOOK_LOCAL_MENU = "local_menu"            # (on_submit, transcribe) -> None; запускает локальное меню на ПК
 
 
 @dataclass
@@ -323,6 +325,11 @@ def audio_recorder():
     return _registry.call_first_sync(HOOK_AUDIO_RECORDER)
 
 
+def start_local_menu(on_submit, transcribe) -> bool:
+    """Запускает локальное меню ПК из модуля pc_control; False, если модуль выключен."""
+    return bool(_registry.call_first_sync(HOOK_LOCAL_MENU, on_submit, transcribe))
+
+
 def voice_available() -> bool:
     return _registry.has_hook(HOOK_TRANSCRIBE)
 
@@ -337,3 +344,8 @@ async def run_startup_hooks() -> None:
 
 async def run_shutdown_hooks() -> None:
     await _registry.call_all(HOOK_SHUTDOWN)
+
+
+async def run_autonomy_tick(autonomy) -> None:
+    """Периодические задачи модулей (напоминания о расписании, почте и т.п.)."""
+    await _registry.call_all(HOOK_AUTONOMY_TICK, autonomy)
