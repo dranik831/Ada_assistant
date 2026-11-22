@@ -35,7 +35,13 @@ _cache_lock = asyncio.Lock()
 _lists_cache: dict[str, tuple[float, list]] = {}
 
 
-async def _get_json(path: str, params: dict | None = None) -> object | None:
+# Сайт отдаёт 204 No Content, когда на запрошенную дату просто нет расписания
+# (выходной или дни ещё не опубликованы). Это не сбой, поэтому отличаем его от
+# реальной сетевой/серверной ошибки, которая возвращает None.
+NO_CONTENT = object()
+
+
+async def _get_json(path: str, params: dict | None = None):
     url = f"{BASE_URL}{path}"
     headers = {
         "Accept": "application/json",
@@ -47,7 +53,7 @@ async def _get_json(path: str, params: dict | None = None) -> object | None:
         async with aiohttp.ClientSession(headers=headers) as session:
             async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=15)) as resp:
                 if resp.status == 204:
-                    return None
+                    return NO_CONTENT
                 if resp.status != 200:
                     logger.warning("UKRTB API %s вернул HTTP %s", path, resp.status)
                     return None
@@ -116,16 +122,27 @@ async def resolve_item(query: str, list_type: str = "groups") -> dict | None:
 
 
 async def get_schedule(query: str, when: str = "", list_type: str = "groups") -> dict | None:
-    """Расписание для группы/преподавателя/аудитории на дату YYYY-MM-DD."""
+    """Расписание для группы/преподавателя/аудитории на дату YYYY-MM-DD.
+
+    Возвращает dict даже когда занятий нет (schedules: []) — это валидный ответ сайта,
+    не ошибка. None означает только реальную сетевую/серверную проблему."""
     item = await resolve_item(query, list_type)
     if not item:
         return None
+    target_date = when or date.today().isoformat()
     params = {
         "type": list_type,
         "item[value]": item["value"],
-        "date": when or date.today().isoformat(),
+        "date": target_date,
     }
     data = await _get_json("/api/frontend/schedule/get", params)
+    if data is NO_CONTENT:
+        return {
+            "success": True,
+            "schedules": [],
+            "date": {"date": target_date},
+            "_item_label": item.get("label", ""),
+        }
     if not isinstance(data, dict) or not data.get("success"):
         return None
     data["_item_label"] = item.get("label", "")
