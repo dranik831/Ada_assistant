@@ -85,13 +85,24 @@ class UniversalAgent:
             logger.error(f"Сбой подключения к LLM API ({self.base_url}): {e}")
             return False
 
-    def _get_tools_spec(self) -> list:
+    def _base_tools_spec(self) -> list:
+        """Базовый набор на каждый ход: ядро + telegram_tools + list_module_tools.
+
+        Инструменты остальных модулей (ПК, секретарь, расписание, почта, зрение)
+        не передаются сразу — модель сначала вызывает list_module_tools(module_name),
+        получает их описание, и дальше в этом же run_turn может вызвать их по имени
+        (см. _expand_tools_with_module). После ответа набор возвращается к базовому.
+        """
         def action(name, description, properties, required):
             return {"type": "function", "function": {"name": name, "description": description,
                 "parameters": {"type": "object", "properties": properties, "required": required}}}
 
         specs = [
             action("list_my_capabilities", "Получить список возможностей Ады.", {}, []),
+            action("list_module_tools", "Узнать инструменты подключённого модуля (ПК, секретарь, расписание, "
+                   "почта, зрение и т.п.) и сразу получить право их вызывать. Сначала посмотри список модулей "
+                   "в list_my_capabilities, если не помнишь точное имя модуля.",
+                   {"module_name": {"type": "string"}}, ["module_name"]),
             action("fetch_web_page", "Прочитать статью или текст по интернет-ссылке (URL).",
                    {"url": {"type": "string"}}, ["url"]),
             action("update_my_profile", "Сменить имя или био в Telegram.",
@@ -116,25 +127,25 @@ class UniversalAgent:
             action("set_mood", "Самостоятельно изменить собственную эмоцию (0..100) в ответ на ситуацию.",
                    {"emotion": {"type": "string"}, "value": {"type": "integer"}}, ["emotion", "value"]),
         ]
-        # Остальные инструменты (Telegram, ПК, секретарь, почта, расписание, зрение, голос)
-        # приходят из подключённых модулей — см. modules/README.md.
-        specs.extend(module_system.registry().tool_specs())
+        # telegram_tools доступен напрямую: это основной рабочий инструмент Ады в каждом чате.
+        specs.extend(module_system.registry().tool_specs_for("telegram_tools"))
         return specs
 
-
-
-    async def run_turn(self, system_prompt: str, user_prompt: str, max_steps: int = 5) -> dict:
+    async def run_turn(self, system_prompt: str, user_prompt: str, max_steps: int = 6) -> dict:
         messages = [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt}
         ]
         actions_taken = []
+        # Спеки модулей, раскрытых вызовом list_module_tools в рамках этого run_turn.
+        # Живут только до конца текущего ответа — следующее сообщение начинается заново.
+        unlocked_specs: list[dict] = []
 
         for _ in range(max_steps):
             try:
                 response = await self._completion(
                     messages=messages,
-                    tools=self._get_tools_spec(),
+                    tools=self._base_tools_spec() + unlocked_specs,
                     temperature=0.6
                 )
             except Exception as e:
@@ -167,7 +178,12 @@ class UniversalAgent:
 
                 actions_taken.append(f"{fname}({fargs})")
 
-                if fname in self.tool_functions:
+                if fname == "list_module_tools":
+                    summary, new_specs = module_system.list_module_tools(fargs.get("module_name", ""))
+                    known = {spec["function"]["name"] for spec in unlocked_specs}
+                    unlocked_specs.extend(spec for spec in new_specs if spec["function"]["name"] not in known)
+                    res = summary
+                elif fname in self.tool_functions:
                     try:
                         res = await self.tool_functions[fname](**fargs)
                     except Exception as err:

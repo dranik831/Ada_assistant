@@ -134,6 +134,7 @@ class ModuleRegistry:
         self._hooks: dict[str, list[tuple[str, Callable]]] = defaultdict(list)
         self._tools: dict[str, Callable] = {}
         self._specs: list[dict] = []
+        self._specs_by_module: dict[str, list[dict]] = {}
         self._capabilities: list[str] = []
 
     # --- регистрация (вызывается из ModuleContext) ---
@@ -143,15 +144,17 @@ class ModuleRegistry:
         if name in self._tools:
             logger.warning("Модуль %s: инструмент %s уже зарегистрирован, пропускаю", module, name)
             return
-        self._tools[name] = func
-        self._specs.append({
+        spec = {
             "type": "function",
             "function": {
                 "name": name,
                 "description": description,
                 "parameters": {"type": "object", "properties": properties, "required": required},
             },
-        })
+        }
+        self._tools[name] = func
+        self._specs.append(spec)
+        self._specs_by_module.setdefault(module, []).append(spec)
         self.modules[module].tools.append(name)
 
     def _add_hook(self, module: str, hook: str, func: Callable) -> None:
@@ -169,6 +172,29 @@ class ModuleRegistry:
 
     def tool_specs(self) -> list[dict]:
         return [dict(spec) for spec in self._specs]
+
+    def tool_specs_for(self, module: str) -> list[dict]:
+        """Спеки инструментов конкретного модуля, для раскрытия через list_module_tools."""
+        return [dict(spec) for spec in self._specs_by_module.get(module, [])]
+
+    def loadable_tool_modules(self) -> list[str]:
+        """Загруженные модули, у которых есть хотя бы один инструмент для модели."""
+        return [info.name for info in self.modules.values() if info.loaded and info.tools]
+
+    def module_summary(self, module: str) -> str:
+        """Короткое описание модуля и перечень его инструментов — для list_module_tools."""
+        info = self.modules.get(module)
+        if info is None or not info.loaded:
+            available = ", ".join(self.loadable_tool_modules()) or "нет"
+            return f"Модуль «{module}» не найден или не подключён. Доступные модули: {available}."
+        if not info.tools:
+            return f"Модуль «{module}» подключён, но не даёт отдельных инструментов для вызова."
+        names = ", ".join(sorted(info.tools))
+        return (
+            f"Модуль «{module}»: {info.description or 'без описания'}.\n"
+            f"Инструменты: {names}.\n"
+            "Теперь можешь вызывать их напрямую по имени в этом же ответе."
+        )
 
     def capabilities(self) -> list[str]:
         return list(self._capabilities)
@@ -349,3 +375,17 @@ async def run_shutdown_hooks() -> None:
 async def run_autonomy_tick(autonomy) -> None:
     """Периодические задачи модулей (напоминания о расписании, почте и т.п.)."""
     await _registry.call_all(HOOK_AUTONOMY_TICK, autonomy)
+
+
+def list_module_tools(module_name: str) -> tuple[str, list[dict]]:
+    """Описание и спеки инструментов модуля — ответ на вызов list_module_tools.
+
+    Возвращает (текст_для_модели, specs); specs временно добавляются в tools-spec
+    текущего run_turn, чтобы модель могла вызвать их следующим шагом.
+    """
+    name = (module_name or "").strip()
+    return _registry.module_summary(name), _registry.tool_specs_for(name)
+
+
+def loadable_tool_modules() -> list[str]:
+    return _registry.loadable_tool_modules()

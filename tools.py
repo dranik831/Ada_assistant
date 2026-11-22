@@ -56,17 +56,21 @@ class AgentTools:
     async def list_my_capabilities(self) -> str:
         """Возвращает перечень доступных возможностей Ады, включая подключённые модули."""
         base = (
-            "Мои инструменты:\n"
+            "Инструменты, доступные прямо сейчас:\n"
             "1. fetch_web_page: чтение статей по ссылкам в интернете.\n"
             "2. send_message_to_user / send_file: отправка сообщений и файлов пользователям и группам.\n"
-            "3. find_contact: поиск контактов в Telegram и локальной базе.\n"
-            "4. remember_fact / search_memory: долговременная память.\n"
-            "5. update_my_profile: изменение имени и описания аккаунта.\n"
-            "6. set_person_category / set_person_respect / set_mood: управление отношениями и настроением."
+            "3. search_memory / search_scoped_memory: долговременная память.\n"
+            "4. update_my_profile: изменение имени и описания аккаунта.\n"
+            "5. set_person_category / set_person_respect / set_mood: управление отношениями и настроением.\n"
+            "6. Инструменты Telegram (диалоги, история, реакции, редактирование и т.д.) — доступны напрямую."
         )
-        extras = module_system.registry().capabilities()
-        if extras:
-            base += "\n\nИз подключённых модулей:\n" + "\n".join(f"— {item}" for item in extras)
+        modules = module_system.registry().loadable_tool_modules()
+        other_modules = [name for name in modules if name != "telegram_tools"]
+        if other_modules:
+            base += (
+                "\n\nДругие подключённые модули (их инструменты сначала нужно узнать через "
+                f"list_module_tools, указав module_name): {', '.join(other_modules)}."
+            )
         return base
 
     async def fetch_web_page(self, url: str) -> str:

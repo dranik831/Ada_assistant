@@ -64,6 +64,7 @@ GROUP_REPLY_COOLDOWN_MINUTES=20
 MESSAGE_DEBOUNCE_SECONDS=3
 CONTEXT_CHATS=3
 CONTEXT_MESSAGES_PER_CHAT=10
+CONTEXT_FORGET_MINUTES=20
 SECRETARY_ENABLED=true
 CALENDAR_FILE=data/calendar.json
 SCHEDULE_FILE=data/schedule.json
@@ -182,9 +183,11 @@ SYSTEM_COMMAND_ALLOWLIST = [
 ]
 
 # Контекст диалога: сколько последних чатов (включая текущий) и сколько
-# последних сообщений из каждого передаётся модели.
+# последних сообщений из каждого передаётся модели. Фоновый чат (не текущий),
+# который молчал дольше CONTEXT_FORGET_MINUTES, в контекст не попадает.
 CONTEXT_CHATS = max(1, int(os.getenv("CONTEXT_CHATS", "3")))
 CONTEXT_MESSAGES_PER_CHAT = max(1, int(os.getenv("CONTEXT_MESSAGES_PER_CHAT", "10")))
+CONTEXT_FORGET_MINUTES = max(1, int(os.getenv("CONTEXT_FORGET_MINUTES", "20")))
 
 # Распознавание речи
 VOICE_ENABLED = os.getenv("VOICE_ENABLED", "true").lower() == "true"
