@@ -2,11 +2,15 @@
 
 Включение: MODULE_VISION=true в .env.
 
-Картинка уходит в OpenAI-совместимую vision-модель (например Qwen3-VL через
-Ollama или LM Studio) и возвращается текстом, который попадает в контекст
+По умолчанию картинка уходит в основной LLM-провайдер (тот же, что отвечает
+в чатах, через ACTIVE_LLM_BASE_URL/ACTIVE_LLM_MODEL) — отдельный vision-сервер
+не нужен, если провайдер поддерживает image_url в сообщениях (как большинство
+современных OpenAI-совместимых агрегаторов). Текст возвращается в контекст
 разговора.
 
-Настройки .env:
+Чтобы использовать отдельную vision-модель (например локальную VLM через
+Ollama/LM Studio), заполните VISION_BASE_URL в .env — тогда модуль переключится
+на неё вместо основного провайдера:
   VISION_BASE_URL=http://localhost:11434/v1
   VISION_MODEL=qwen3-vl:2b
   VISION_API_KEY=
@@ -26,7 +30,7 @@ from .engine import describe, grab_screen, media_label
 
 DESCRIPTION = "зрение: фото, стикеры и экран ПК"
 VERSION = "1.0"
-DEFAULT_ENABLED = False
+DEFAULT_ENABLED = True
 
 logger = logging.getLogger("Ada.Module.vision")
 

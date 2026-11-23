@@ -1,4 +1,9 @@
-"""Зрение: локальная VLM (например Qwen3-VL через Ollama/LM Studio) превращает картинку в текст."""
+"""Зрение: картинка уходит в основной LLM-провайдер (тот же, что ведёт диалоги).
+
+Если провайдер настроен на VISION_BASE_URL/VISION_MODEL отдельно (например локальная
+VLM через Ollama/LM Studio), используются они; иначе — ACTIVE_LLM_* того же провайдера,
+что и обычные ответы (OpenAI-совместимый vision через image_url работает у многих
+современных моделей, включая большинство OpenAI-совместимых агрегаторов)."""
 import base64
 import io
 import logging
@@ -15,6 +20,12 @@ PHOTO_PROMPT = (
     "Если это стикер, назови эмоцию или смысл."
 )
 _client: AsyncOpenAI | None = None
+
+# Пустой VISION_BASE_URL (по умолчанию) означает «используй основной провайдер».
+_USE_MAIN_PROVIDER = not config.VISION_BASE_URL.strip()
+_BASE_URL = config.ACTIVE_LLM_BASE_URL if _USE_MAIN_PROVIDER else config.VISION_BASE_URL
+_API_KEY = config.ACTIVE_LLM_API_KEY if _USE_MAIN_PROVIDER else (config.VISION_API_KEY or "local")
+_MODEL = config.ACTIVE_LLM_MODEL if _USE_MAIN_PROVIDER else config.VISION_MODEL
 
 
 def _to_jpeg(raw: bytes) -> bytes:
@@ -34,16 +45,19 @@ def grab_screen() -> bytes:
 async def describe(raw: bytes, prompt: str) -> str:
     global _client
     if _client is None:
-        _client = AsyncOpenAI(base_url=config.VISION_BASE_URL, api_key=config.VISION_API_KEY or "local",
-                              timeout=config.VISION_TIMEOUT_SECONDS)
+        _client = AsyncOpenAI(base_url=_BASE_URL, api_key=_API_KEY, timeout=config.VISION_TIMEOUT_SECONDS)
     url = "data:image/jpeg;base64," + base64.b64encode(_to_jpeg(raw)).decode()
-    resp = await _client.chat.completions.create(
-        model=config.VISION_MODEL, max_tokens=4000,
-        messages=[{"role": "user", "content": [
-            {"type": "image_url", "image_url": {"url": url}},
-            {"type": "text", "text": prompt},
-        ]}],
-    )
+    try:
+        resp = await _client.chat.completions.create(
+            model=_MODEL, max_tokens=4000,
+            messages=[{"role": "user", "content": [
+                {"type": "image_url", "image_url": {"url": url}},
+                {"type": "text", "text": prompt},
+            ]}],
+        )
+    except Exception as exc:
+        source = "основной провайдер" if _USE_MAIN_PROVIDER else "VISION_BASE_URL"
+        raise RuntimeError(f"vision-запрос к {source} ({_MODEL}) не удался: {exc}") from exc
     text = (resp.choices[0].message.content or "").strip()
     if not text:
         raise RuntimeError(f"vision-модель вернула пустой ответ ({resp.choices[0].finish_reason})")

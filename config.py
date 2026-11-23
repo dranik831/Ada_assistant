@@ -44,10 +44,11 @@ MODULE_EMAIL=false
 # Голосовое управление (Ctrl+Alt+Space). Модуль modules/voice
 VOICE_ENABLED=true
 
-# Зрение: локальная vision-модель через OpenAI-совместимый сервер (Ollama: http://localhost:11434/v1)
-VISION_ENABLED=false
-VISION_BASE_URL=http://localhost:11434/v1
-VISION_MODEL=qwen3-vl:2b
+# Зрение (modules/vision): по умолчанию пустой VISION_BASE_URL значит "использовать
+# основной LLM-провайдер (ACTIVE_LLM_*)". Заполните, чтобы взять отдельную
+# vision-модель, например локальную VLM через Ollama (http://localhost:11434/v1).
+VISION_BASE_URL=
+VISION_MODEL=
 VISION_API_KEY=
 VISION_TIMEOUT_SECONDS=120
 
@@ -191,9 +192,10 @@ CONTEXT_FORGET_MINUTES = max(1, int(os.getenv("CONTEXT_FORGET_MINUTES", "20")))
 
 # Распознавание речи
 VOICE_ENABLED = os.getenv("VOICE_ENABLED", "true").lower() == "true"
-VISION_ENABLED = os.getenv("VISION_ENABLED", "false").lower() == "true"
-VISION_BASE_URL = os.getenv("VISION_BASE_URL", "http://localhost:11434/v1").strip()
-VISION_MODEL = os.getenv("VISION_MODEL", "qwen3-vl:2b").strip()
+# Пустой VISION_BASE_URL (по умолчанию) — модуль vision использует основной
+# LLM-провайдер (ACTIVE_LLM_*) вместо отдельной vision-модели.
+VISION_BASE_URL = os.getenv("VISION_BASE_URL", "").strip()
+VISION_MODEL = os.getenv("VISION_MODEL", "").strip()
 VISION_API_KEY = os.getenv("VISION_API_KEY", "").strip()
 VISION_TIMEOUT_SECONDS = max(5, int(os.getenv("VISION_TIMEOUT_SECONDS", "120")))
 WHISPER_MODE = os.getenv("WHISPER_MODE", "local").strip().lower()
