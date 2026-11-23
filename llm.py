@@ -1,45 +1,154 @@
-import os
 import json
 import logging
 import re
-from openai import AsyncOpenAI, APIConnectionError, APITimeoutError, APIStatusError, RateLimitError
+
+from openai import AsyncOpenAI
+from anthropic import AsyncAnthropic
+
 from tools import AgentTools
 import config
 import module_system
 
 logger = logging.getLogger("Ada.LLM")
 
+
+class NormalizedMessage:
+    """Единый формат ответа модели независимо от провайдера.
+
+    content — текст ответа (может быть пустым, если модель только звала инструменты);
+    tool_calls — [{"id", "name", "arguments": dict}, ...]."""
+
+    __slots__ = ("content", "tool_calls")
+
+    def __init__(self, content: str, tool_calls: list):
+        self.content = content
+        self.tool_calls = tool_calls
+
+
+class _Provider:
+    """Один провайдер цепочки: хранит клиент и знает, как с ним говорить."""
+
+    def __init__(self, settings: dict):
+        self.kind = settings["kind"]
+        self.model = settings["model"]
+        self.base_url = settings["base_url"]
+        self.api_key = settings["api_key"]
+        if self.kind == "anthropic":
+            self.client = AsyncAnthropic(base_url=self.base_url or None, api_key=self.api_key,
+                                         timeout=config.LLM_TIMEOUT_SECONDS, max_retries=0)
+        else:
+            default_headers = {}
+            if "openrouter.ai" in self.base_url:
+                default_headers = {
+                    "HTTP-Referer": "https://github.com/dranik83/ada_tg",
+                    "X-Title": "Ada Telegram Agent",
+                }
+            self.client = AsyncOpenAI(base_url=self.base_url, api_key=self.api_key,
+                                      default_headers=default_headers,
+                                      timeout=config.LLM_TIMEOUT_SECONDS, max_retries=0)
+
+    def __repr__(self) -> str:
+        return f"{self.kind}:{self.model}"
+
+    async def complete(self, *, messages, tools=None, temperature=0.6, max_tokens=None,
+                       timeout_override=None) -> NormalizedMessage:
+        if self.kind == "anthropic":
+            return await self._complete_anthropic(messages, tools, temperature, max_tokens, timeout_override)
+        return await self._complete_openai(messages, tools, temperature, max_tokens, timeout_override)
+
+    async def _complete_openai(self, messages, tools, temperature, max_tokens, timeout_override) -> NormalizedMessage:
+        client = self.client.with_options(timeout=timeout_override) if timeout_override else self.client
+        kwargs = {"model": self.model, "messages": messages, "temperature": temperature}
+        if tools:
+            kwargs["tools"] = tools
+        if max_tokens:
+            kwargs["max_tokens"] = max_tokens
+        resp = await client.chat.completions.create(**kwargs)
+        msg = resp.choices[0].message
+        tool_calls = []
+        for call in (msg.tool_calls or []):
+            try:
+                args = json.loads(call.function.arguments)
+            except Exception:
+                args = {}
+            tool_calls.append({"id": call.id, "name": call.function.name, "arguments": args})
+        return NormalizedMessage(content=(msg.content or "").strip(), tool_calls=tool_calls)
+
+    async def _complete_anthropic(self, messages, tools, temperature, max_tokens, timeout_override) -> NormalizedMessage:
+        client = self.client.with_options(timeout=timeout_override) if timeout_override else self.client
+        system_prompt, anthro_messages = _to_anthropic_messages(messages)
+        kwargs = {
+            "model": self.model,
+            "messages": anthro_messages,
+            "temperature": temperature,
+            "max_tokens": max_tokens or 4096,
+        }
+        if system_prompt:
+            kwargs["system"] = system_prompt
+        if tools:
+            kwargs["tools"] = [_openai_tool_to_anthropic(spec) for spec in tools]
+        resp = await client.messages.create(**kwargs)
+        text_parts = []
+        tool_calls = []
+        for block in resp.content:
+            if block.type == "text":
+                text_parts.append(block.text)
+            elif block.type == "tool_use":
+                tool_calls.append({"id": block.id, "name": block.name, "arguments": block.input or {}})
+        return NormalizedMessage(content="\n".join(text_parts).strip(), tool_calls=tool_calls)
+
+
+def _openai_tool_to_anthropic(spec: dict) -> dict:
+    fn = spec["function"]
+    return {"name": fn["name"], "description": fn.get("description", ""), "input_schema": fn.get("parameters", {})}
+
+
+def _to_anthropic_messages(messages: list[dict]) -> tuple[str, list[dict]]:
+    """Конвертирует историю в формате OpenAI (system/user/assistant/tool) в
+    Anthropic messages + system prompt. Используется только когда провайдер — anthropic."""
+    system_parts = []
+    out = []
+    for msg in messages:
+        role = msg.get("role") if isinstance(msg, dict) else getattr(msg, "role", None)
+        if role == "system":
+            system_parts.append(msg["content"])
+        elif role == "user":
+            out.append({"role": "user", "content": msg["content"]})
+        elif role == "tool":
+            tool_call_id = msg.get("tool_call_id") if isinstance(msg, dict) else msg.tool_call_id
+            content = msg.get("content") if isinstance(msg, dict) else msg.content
+            out.append({"role": "user", "content": [
+                {"type": "tool_result", "tool_use_id": tool_call_id, "content": str(content)}
+            ]})
+        else:  # assistant (dict или объект NormalizedMessage/OpenAI message)
+            content = msg.get("content") if isinstance(msg, dict) else getattr(msg, "content", "") or ""
+            tool_calls = msg.get("tool_calls") if isinstance(msg, dict) else getattr(msg, "tool_calls", None)
+            blocks = []
+            if content:
+                blocks.append({"type": "text", "text": content})
+            for call in (tool_calls or []):
+                call_id = call.get("id") if isinstance(call, dict) else call.id
+                name = call.get("name") if isinstance(call, dict) else call.name
+                args = call.get("arguments") if isinstance(call, dict) else call.arguments
+                blocks.append({"type": "tool_use", "id": call_id, "name": name, "input": args})
+            out.append({"role": "assistant", "content": blocks or [{"type": "text", "text": ""}]})
+    return "\n\n".join(system_parts), out
+
+
 class UniversalAgent:
     def __init__(self, tools_instance: AgentTools):
-        self.provider = config.LLM_PROVIDER
-        self.base_url = config.ACTIVE_LLM_BASE_URL
-        self.api_key = config.ACTIVE_LLM_API_KEY
-        self.model_name = config.ACTIVE_LLM_MODEL
         self.tools = tools_instance
-        
-        # Универсальный клиент с заголовками для совместимости
-        default_headers = {}
-        if "openrouter.ai" in self.base_url:
-            default_headers = {
-                "HTTP-Referer": "https://github.com/dranik83/ada_tg",
-                "X-Title": "Ada Telegram Agent"
-            }
 
-        self.client = AsyncOpenAI(
-            base_url=self.base_url,
-            api_key=self.api_key,
-            default_headers=default_headers,
-            timeout=config.LLM_TIMEOUT_SECONDS,
-            max_retries=0,
-        )
-        self.fallback_client = None
-        if self.provider == "openai_compatible" and config.GEMINI_API_KEY:
-            self.fallback_client = AsyncOpenAI(
-                base_url=config.GEMINI_BASE_URL,
-                api_key=config.GEMINI_API_KEY,
-                timeout=config.LLM_TIMEOUT_SECONDS,
-                max_retries=0,
+        if not config.LLM_PROVIDER_CHAIN:
+            raise ValueError(
+                "Нет ни одного настроенного провайдера LLM. Заполните LLM_PROVIDERS и ключи в .env."
             )
+        self.providers = [_Provider(settings) for settings in config.LLM_PROVIDER_CHAIN]
+
+        # Обратная совместимость с местами, которые читают provider/base_url/model напрямую.
+        self.provider = self.providers[0].kind
+        self.base_url = self.providers[0].base_url
+        self.model_name = self.providers[0].model
 
         self.tool_functions = {
             "list_my_capabilities": self.tools.list_my_capabilities,
@@ -57,32 +166,32 @@ class UniversalAgent:
         # все Telegram/ПК/секретарские/почтовые/расписные инструменты.
         self.tool_functions.update(module_system.registry().tool_functions())
 
-
-    async def _completion(self, *, startup=False, **kwargs):
-        client = self.client.with_options(timeout=config.LLM_STARTUP_TIMEOUT_SECONDS) if startup else self.client
-        try:
-            return await client.chat.completions.create(model=self.model_name, **kwargs)
-        except (APIConnectionError, APITimeoutError, RateLimitError, APIStatusError) as exc:
-            if not self.fallback_client or (isinstance(exc, APIStatusError) and exc.status_code < 500 and exc.status_code != 429):
-                raise
-            logger.warning("Основная LLM недоступна (%s); переключаюсь на Gemini %s", type(exc).__name__, config.GEMINI_MODEL)
-            fallback = (
-                self.fallback_client.with_options(timeout=config.LLM_STARTUP_TIMEOUT_SECONDS)
-                if startup else self.fallback_client
-            )
-            return await fallback.chat.completions.create(model=config.GEMINI_MODEL, **kwargs)
+    async def _completion(self, *, startup=False, messages, tools=None, temperature=0.6,
+                          max_tokens=None) -> NormalizedMessage:
+        """Пробует провайдеров по очереди в порядке приоритета; любая ошибка — к следующему."""
+        timeout_override = config.LLM_STARTUP_TIMEOUT_SECONDS if startup else None
+        last_exc = None
+        for i, provider in enumerate(self.providers):
+            try:
+                return await provider.complete(
+                    messages=messages, tools=tools, temperature=temperature,
+                    max_tokens=max_tokens, timeout_override=timeout_override,
+                )
+            except Exception as exc:
+                last_exc = exc
+                if i + 1 < len(self.providers):
+                    logger.warning("Провайдер %s недоступен (%s: %s); переключаюсь на %s",
+                                   provider, type(exc).__name__, exc, self.providers[i + 1])
+                continue
+        raise last_exc
 
     async def verify_connection(self) -> bool:
         try:
-            resp = await self._completion(
-                startup=True,
-                messages=[{"role": "user", "content": "ping"}],
-                max_tokens=5
-            )
-            logger.info("LLM API успешно ответил: model=%s", resp.model)
+            resp = await self._completion(startup=True, messages=[{"role": "user", "content": "ping"}], max_tokens=5)
+            logger.info("LLM API успешно ответил (provider=%s)", self.providers[0])
             return True
         except Exception as e:
-            logger.error(f"Сбой подключения к LLM API ({self.base_url}): {e}")
+            logger.error(f"Сбой подключения ко всем LLM-провайдерам ({[str(p) for p in self.providers]}): {e}")
             return False
 
     def _base_tools_spec(self) -> list:
@@ -90,8 +199,8 @@ class UniversalAgent:
 
         Инструменты остальных модулей (ПК, секретарь, расписание, почта, зрение)
         не передаются сразу — модель сначала вызывает list_module_tools(module_name),
-        получает их описание, и дальше в этом же run_turn может вызвать их по имени
-        (см. _expand_tools_with_module). После ответа набор возвращается к базовому.
+        получает их описание, и дальше в этом же run_turn может вызвать их по имени.
+        После ответа набор возвращается к базовому.
         """
         def action(name, description, properties, required):
             return {"type": "function", "function": {"name": name, "description": description,
@@ -134,7 +243,7 @@ class UniversalAgent:
     async def run_turn(self, system_prompt: str, user_prompt: str, max_steps: int = 6) -> dict:
         messages = [
             {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt}
+            {"role": "user", "content": user_prompt},
         ]
         actions_taken = []
         # Спеки модулей, раскрытых вызовом list_module_tools в рамках этого run_turn.
@@ -143,10 +252,10 @@ class UniversalAgent:
 
         for _ in range(max_steps):
             try:
-                response = await self._completion(
+                msg = await self._completion(
                     messages=messages,
                     tools=self._base_tools_spec() + unlocked_specs,
-                    temperature=0.6
+                    temperature=0.6,
                 )
             except Exception as e:
                 logger.error(f"Ошибка LLM API: {e}")
@@ -155,13 +264,10 @@ class UniversalAgent:
                 return {"must_reply": False, "reply": "", "messages": [], "actions": actions_taken,
                         "error": f"{type(e).__name__}: {e}"}
 
-            choice = response.choices[0]
-            msg = choice.message
-            messages.append(msg)
+            messages.append({"role": "assistant", "content": msg.content, "tool_calls": msg.tool_calls})
 
             if not msg.tool_calls:
-                raw = msg.content.strip() if msg.content else ""
-                must_reply, parts = self._parse_reply(raw)
+                must_reply, parts = self._parse_reply(msg.content)
                 return {
                     "must_reply": must_reply,
                     "reply": "\n".join(parts),
@@ -169,12 +275,9 @@ class UniversalAgent:
                     "actions": actions_taken,
                 }
 
-            for tool_call in msg.tool_calls:
-                fname = tool_call.function.name
-                try:
-                    fargs = json.loads(tool_call.function.arguments)
-                except Exception:
-                    fargs = {}
+            for call in msg.tool_calls:
+                fname = call["name"]
+                fargs = call["arguments"] or {}
 
                 actions_taken.append(f"{fname}({fargs})")
 
@@ -193,8 +296,8 @@ class UniversalAgent:
 
                 messages.append({
                     "role": "tool",
-                    "tool_call_id": tool_call.id,
-                    "content": str(res)
+                    "tool_call_id": call["id"],
+                    "content": str(res),
                 })
 
         fallback = "Я выполнила действия."
@@ -250,11 +353,11 @@ class UniversalAgent:
             resp = await self._completion(
                 messages=[
                     {"role": "system", "content": "Выдели 2-3 ключевых факта из старого диалога. Только суть списком, без приветствий."},
-                    {"role": "user", "content": text_chunk}
+                    {"role": "user", "content": text_chunk},
                 ],
-                max_tokens=250
+                max_tokens=250,
             )
-            return resp.choices[0].message.content.strip()
+            return resp.content
         except Exception:
             return ""
 
@@ -263,10 +366,11 @@ class UniversalAgent:
             resp = await self._completion(
                 messages=[
                     {"role": "system", "content": "Сожми воспоминания в JSON-массив: [{\"category\": \"тема\", \"content\": \"факт\"}]"},
-                    {"role": "user", "content": memories_text}
-                ]
+                    {"role": "user", "content": memories_text},
+                ],
+                max_tokens=2000,
             )
-            raw = resp.choices[0].message.content.strip()
+            raw = resp.content
             if "```json" in raw:
                 raw = raw.split("```json")[1].split("```")[0].strip()
             elif "```" in raw:

@@ -20,14 +20,19 @@ TG_PHONE=
 ADMIN_USERNAME=dranik83
 ADMIN_USER_ID=0
 
-# LLM provider: gemini (default) or openai_compatible
-LLM_PROVIDER=gemini
+# Цепочка провайдеров LLM в порядке приоритета (через запятую). Первый
+# отвечающий используется; при любой ошибке Ада переходит к следующему.
+# Доступны: openai_compatible, gemini, anthropic.
+LLM_PROVIDERS=openai_compatible,gemini
 GEMINI_API_KEY=
 GEMINI_MODEL=gemini-3.5-flash-lite
 GEMINI_BASE_URL=https://generativelanguage.googleapis.com/v1beta/openai/
 LLM_API_KEY=
 LLM_BASE_URL=https://api.openai.com/v1
 LLM_MODEL=gpt-4o-mini
+ANTHROPIC_API_KEY=
+ANTHROPIC_MODEL=claude-sonnet-4-5
+ANTHROPIC_BASE_URL=https://api.anthropic.com
 LLM_TIMEOUT_SECONDS=45
 LLM_STARTUP_TIMEOUT_SECONDS=12
 
@@ -133,7 +138,9 @@ else:
 ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "dranik83").replace("@", "").strip()
 ADMIN_USER_ID = int(os.getenv("ADMIN_USER_ID", "0"))
 
-LLM_PROVIDER = os.getenv("LLM_PROVIDER", "gemini").strip().lower()
+# Устаревшая переменная одного провайдера; если задана без LLM_PROVIDERS,
+# цепочка строится из неё одной (см. LLM_PROVIDER_CHAIN ниже).
+LLM_PROVIDER = os.getenv("LLM_PROVIDER", "").strip().lower()
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash").strip()
 GEMINI_BASE_URL = os.getenv(
@@ -142,16 +149,59 @@ GEMINI_BASE_URL = os.getenv(
 LLM_BASE_URL = os.getenv("LLM_BASE_URL", "https://api.openai.com/v1").strip()
 LLM_API_KEY = os.getenv("LLM_API_KEY", "").strip()
 LLM_MODEL = os.getenv("LLM_MODEL", "gpt-4o-mini").strip()
+ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "").strip()
+ANTHROPIC_MODEL = os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-5").strip()
+ANTHROPIC_BASE_URL = os.getenv("ANTHROPIC_BASE_URL", "https://api.anthropic.com").strip()
 LLM_TIMEOUT_SECONDS = max(5, int(os.getenv("LLM_TIMEOUT_SECONDS", "45")))
 LLM_STARTUP_TIMEOUT_SECONDS = max(3, int(os.getenv("LLM_STARTUP_TIMEOUT_SECONDS", "12")))
 
-if LLM_PROVIDER not in {"gemini", "openai_compatible"}:
-    raise ValueError("LLM_PROVIDER должен быть gemini или openai_compatible")
+_KNOWN_LLM_PROVIDERS = {"gemini", "openai_compatible", "anthropic"}
 
-ACTIVE_LLM_BASE_URL = GEMINI_BASE_URL if LLM_PROVIDER == "gemini" else LLM_BASE_URL
-# Backward compatibility: older installations stored the Gemini key in LLM_API_KEY.
-ACTIVE_LLM_API_KEY = (GEMINI_API_KEY or LLM_API_KEY) if LLM_PROVIDER == "gemini" else LLM_API_KEY
-ACTIVE_LLM_MODEL = GEMINI_MODEL if LLM_PROVIDER == "gemini" else LLM_MODEL
+
+def _provider_settings(kind: str) -> dict:
+    """base_url/api_key/model конкретного типа провайдера."""
+    if kind == "gemini":
+        return {"kind": kind, "base_url": GEMINI_BASE_URL,
+                # Backward compatibility: older installations stored the Gemini key in LLM_API_KEY.
+                "api_key": GEMINI_API_KEY or LLM_API_KEY, "model": GEMINI_MODEL}
+    if kind == "anthropic":
+        return {"kind": kind, "base_url": ANTHROPIC_BASE_URL, "api_key": ANTHROPIC_API_KEY, "model": ANTHROPIC_MODEL}
+    if kind == "openai_compatible":
+        return {"kind": kind, "base_url": LLM_BASE_URL, "api_key": LLM_API_KEY, "model": LLM_MODEL}
+    raise ValueError(f"Неизвестный тип провайдера LLM: {kind}")
+
+
+def _build_provider_chain() -> list[dict]:
+    raw = os.getenv("LLM_PROVIDERS", "").strip()
+    if not raw and LLM_PROVIDER:
+        # Обратная совместимость: старые инсталляции задавали один LLM_PROVIDER и
+        # получали автоматический fallback на Gemini — сохраняем это поведение.
+        raw = LLM_PROVIDER if LLM_PROVIDER == "gemini" else f"{LLM_PROVIDER},gemini"
+    if not raw:
+        raw = "openai_compatible,gemini"
+    kinds = [item.strip().lower() for item in raw.split(",") if item.strip()]
+    unknown = [kind for kind in kinds if kind not in _KNOWN_LLM_PROVIDERS]
+    if unknown:
+        raise ValueError(
+            f"LLM_PROVIDERS содержит неизвестные провайдеры: {', '.join(unknown)}. "
+            f"Доступны: {', '.join(sorted(_KNOWN_LLM_PROVIDERS))}."
+        )
+    chain = [_provider_settings(kind) for kind in kinds]
+    # Провайдер без ключа бесполезен в цепочке — пропускаем его молча.
+    return [item for item in chain if item["api_key"]]
+
+
+# Цепочка провайдеров в порядке приоритета: [{"kind", "base_url", "api_key", "model"}, ...]
+LLM_PROVIDER_CHAIN = _build_provider_chain()
+
+# Обратная совместимость: "активный" провайдер — первый в цепочке (используется
+# модулями, которым не нужна отказоустойчивость, например vision).
+_primary = LLM_PROVIDER_CHAIN[0] if LLM_PROVIDER_CHAIN else _provider_settings("openai_compatible")
+ACTIVE_LLM_BASE_URL = _primary["base_url"]
+ACTIVE_LLM_API_KEY = _primary["api_key"]
+ACTIVE_LLM_MODEL = _primary["model"]
+# LLM_PROVIDER как имя первого провайдера цепочки — для логов и диагностики.
+LLM_PROVIDER = _primary["kind"]
 
 AUTONOMY_ENABLED = os.getenv("AUTONOMY_ENABLED", "true").lower() == "true"
 GROUP_AUTONOMY_ENABLED = os.getenv("GROUP_AUTONOMY_ENABLED", "true").lower() == "true"

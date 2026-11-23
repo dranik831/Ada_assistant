@@ -118,9 +118,10 @@ async def notify_llm_error(error_text: str, chat_id: int | None, user_id: int):
     if not admin_id:
         return
     _last_llm_error_notice = now
+    provider_chain = " -> ".join(str(p) for p in agent.providers)
     enqueue_message(
         admin_id,
-        f"⚠️ Ошибка LLM API ({config.LLM_PROVIDER}/{config.ACTIVE_LLM_MODEL}).\n"
+        f"⚠️ Ошибка LLM API. Все провайдеры в цепочке недоступны: {provider_chain}.\n"
         f"Чат: {chat_id}, собеседник: {user_id}. Ответ не отправлен.\n{error_text[:1500]}\n"
         f"(следующее уведомление не раньше чем через {_LLM_ERROR_NOTICE_INTERVAL // 60} мин)",
         save=False,
@@ -437,8 +438,9 @@ async def handle_edit_mode(event, text: str) -> bool:
         return True
     if command == "состояние":
         active_modules = modules.active_names()
+        provider_chain = " -> ".join(str(p) for p in agent.providers)
         await event.reply(
-            f"Провайдер: {config.LLM_PROVIDER}\nМодель: {config.ACTIVE_LLM_MODEL}\n"
+            f"Провайдеры LLM (по приоритету): {provider_chain}\n"
             f"Автономность: {await db.get_kv('autonomy_enabled', 'true')}\n"
             f"Модули: {', '.join(active_modules) if active_modules else 'нет активных'}\n"
             f"Эмоции: {json.dumps(await emotions.get_state(), ensure_ascii=False)}"
@@ -866,9 +868,8 @@ async def main():
     logger.info("Процесс Ады запущен; инициализация базы данных")
     await db.init()
     logger.info(
-        "Проверка LLM: provider=%s model=%s timeout=%ss",
-        config.LLM_PROVIDER,
-        config.ACTIVE_LLM_MODEL,
+        "Проверка LLM: цепочка=%s timeout=%ss",
+        " -> ".join(str(p) for p in agent.providers),
         config.LLM_STARTUP_TIMEOUT_SECONDS,
     )
     if not await agent.verify_connection():
