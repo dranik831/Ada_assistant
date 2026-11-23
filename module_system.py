@@ -74,12 +74,17 @@ def _env_name(name: str) -> str:
 class ModuleContext:
     """То, что модуль получает от Ады, и то, через что он отдаёт свои возможности."""
 
-    def __init__(self, registry: "ModuleRegistry", module_name: str, services: dict[str, Any]):
+    def __init__(self, registry: "ModuleRegistry", module_name: str):
         self._registry = registry
         self._module_name = module_name
-        self._services = services
         self.logger = logging.getLogger(f"Ada.Module.{module_name}")
         self.config = config
+
+    @property
+    def _services(self) -> dict[str, Any]:
+        # Общий словарь реестра: сервисы, добавленные после load_modules()
+        # (например brain), видны модулям через ctx.service(...) без пересборки контекста.
+        return self._registry.services
 
     @property
     def name(self) -> str:
@@ -129,13 +134,22 @@ class ModuleContext:
 class ModuleRegistry:
     """Хранит загруженные модули и раздаёт их инструменты и хуки остальному коду."""
 
-    def __init__(self):
+    def __init__(self, services: dict[str, Any] | None = None):
         self.modules: dict[str, ModuleInfo] = {}
         self._hooks: dict[str, list[tuple[str, Callable]]] = defaultdict(list)
         self._tools: dict[str, Callable] = {}
         self._specs: list[dict] = []
         self._specs_by_module: dict[str, list[dict]] = {}
         self._capabilities: list[str] = []
+        # Общий словарь сервисов: ModuleContext читает из него лениво, поэтому
+        # сервис, добавленный после load_modules() (например brain, который
+        # сам зависит от уже собранных инструментов модулей), виден модулям,
+        # обращающимся к нему позже через ctx.service(...).
+        self.services: dict[str, Any] = services if services is not None else {}
+
+    def set_service(self, key: str, value: Any) -> None:
+        """Регистрирует сервис постфактум — для зависимостей, созданных после load_modules()."""
+        self.services[key] = value
 
     # --- регистрация (вызывается из ModuleContext) ---
 
@@ -290,11 +304,15 @@ def discover() -> list[str]:
 def load_modules(**services) -> ModuleRegistry:
     """Импортирует включённые модули и вызывает их setup(ctx).
 
-    services — то, что модули получают через ModuleContext: db, client, tools, emotions.
+    services — то, что модули получают через ModuleContext: db, client, tools, emotions
+    и всё, что передано именованным аргументом. Сервис, которого на момент вызова
+    ещё нет (например brain, создающийся после сборки реестра модулей), можно
+    добавить позже через registry().set_service(key, value) — модули, которые
+    обращаются к нему лениво (не в setup(), а в реальном хуке/инструменте), увидят его.
     Падение одного модуля не мешает запуску Ады: ошибка попадает в лог и в «модули».
     """
     global _registry
-    _registry = ModuleRegistry()
+    _registry = ModuleRegistry(services)
 
     for name in discover():
         default_enabled = True
@@ -316,7 +334,7 @@ def load_modules(**services) -> ModuleRegistry:
             setup = getattr(module, "setup", None)
             if not callable(setup):
                 raise AttributeError("в модуле нет функции setup(ctx)")
-            setup(ModuleContext(_registry, name, services))
+            setup(ModuleContext(_registry, name))
             info.loaded = True
             logger.info("Модуль %s подключён%s", name, f": {info.description}" if info.description else "")
         except Exception as exc:

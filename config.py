@@ -46,9 +46,19 @@ MODULE_TELEGRAM_TOOLS=true
 MODULE_SCHEDULE_COLLEGE=true
 MODULE_SECRETARY=true
 MODULE_EMAIL=false
+MODULE_MINECRAFT=false
 
 # Голосовое управление (Ctrl+Alt+Space). Модуль modules/voice
 VOICE_ENABLED=true
+
+# Minecraft (modules/minecraft): RCON-команды и чтение чата из logs/latest.log
+MINECRAFT_RCON_HOST=127.0.0.1
+MINECRAFT_RCON_PORT=25575
+MINECRAFT_RCON_PASSWORD=
+MINECRAFT_SERVER_DIR=
+MINECRAFT_LOG_PATH=
+MINECRAFT_CHAT_REPLY_PROBABILITY=0.3
+MINECRAFT_CHAT_COOLDOWN_SECONDS=20
 
 # Зрение (modules/vision): по умолчанию пустой VISION_BASE_URL значит "использовать
 # основной LLM-провайдер (ACTIVE_LLM_*)". Заполните, чтобы взять отдельную

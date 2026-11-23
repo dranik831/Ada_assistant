@@ -72,6 +72,14 @@ def setup(ctx: ModuleContext) -> None:
 | `ctx.logger` | логгер `Ada.Module.<имя>` |
 | `ctx.service(key)` | произвольный сервис из ядра |
 
+`ctx.service("brain")` — особый случай: `Brain` создаётся в `main.py` уже после
+подключения всех модулей (он зависит от `UniversalAgent`, который собирает их
+инструменты), поэтому в момент `setup()` его ещё нет. Вызывайте `ctx.service("brain")`
+лениво — внутри хука или функции инструмента, которая выполнится позже, а не прямо
+в `setup()`. К этому моменту `main.py` уже зарегистрирует его через
+`modules.set_service("brain", brain)`. Так же можно добавлять и другие сервисы,
+которых не было на момент `load_modules()`.
+
 Методы регистрации:
 
 - `ctx.register_tool(name, func, description, properties, required)` — инструмент для модели.
@@ -122,6 +130,7 @@ def setup(ctx: ModuleContext) -> None:
 | `schedule_college` | `MODULE_SCHEDULE_COLLEGE` | расписание колледжа УКРТБ и утренняя сводка Создателю |
 | `secretary` | `MODULE_SECRETARY` | личный календарь, импортированное расписание, напоминания, запросы на встречу |
 | `email` | `MODULE_EMAIL` | чтение почты Создателя по IMAP и уведомления о важных письмах |
+| `minecraft` | `MODULE_MINECRAFT` | RCON-команды на сервере Minecraft и автономное общение в игровом чате (читает `logs/latest.log`) |
 
 В ядре (`tools.py`) остаются: `fetch_web_page`, `send_message_to_user`, `send_file`,
 `update_my_profile`, память (`search_memory`, `search_scoped_memory`) и управление

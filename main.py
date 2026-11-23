@@ -54,6 +54,10 @@ modules = module_system.load_modules(db=db, client=client, tools=tools, emotions
 
 agent = UniversalAgent(tools)
 brain = Brain(db, emotions, personality, agent)
+# brain зависит от agent, который зависит от инструментов уже собранных модулей —
+# поэтому его нельзя передать в load_modules() напрямую; модули, которым он нужен
+# (например minecraft), читают его лениво через ctx.service("brain").
+modules.set_service("brain", brain)
 
 async def send_user_message(target_id: int, text: str):
     enqueue_message(target_id, text)
