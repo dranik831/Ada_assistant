@@ -32,6 +32,7 @@ LLM_BASE_URL=https://api.openai.com/v1
 LLM_MODEL=gpt-4o-mini
 ANTHROPIC_API_KEY=
 ANTHROPIC_MODEL=claude-sonnet-4-5
+# Без хвостового /v1 — Anthropic SDK сам добавляет /v1/messages к этому адресу.
 ANTHROPIC_BASE_URL=https://api.anthropic.com
 LLM_TIMEOUT_SECONDS=45
 LLM_STARTUP_TIMEOUT_SECONDS=12

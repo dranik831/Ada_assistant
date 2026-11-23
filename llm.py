@@ -81,10 +81,12 @@ class _Provider:
             "model": self.model,
             "messages": anthro_messages,
             "max_tokens": max_tokens or 4096,
-            # В anthropic>=1.0 temperature/top_p/top_k больше не параметры метода
-            # напрямую — передаются через extra_body.
-            "extra_body": {"temperature": temperature},
         }
+        # temperature можно передать через extra_body (в anthropic>=1.0 это больше
+        # не прямой параметр create()), но некоторые Anthropic-совместимые шлюзы
+        # (например vibecode.moe) принимают только значение по умолчанию и
+        # отвечают 400 на любое другое — поэтому не навязываем своё значение и
+        # оставляем температуру на выборе провайдера.
         if system_prompt:
             kwargs["system"] = system_prompt
         if tools:
