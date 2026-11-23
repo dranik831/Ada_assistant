@@ -80,8 +80,10 @@ class _Provider:
         kwargs = {
             "model": self.model,
             "messages": anthro_messages,
-            "temperature": temperature,
             "max_tokens": max_tokens or 4096,
+            # В anthropic>=1.0 temperature/top_p/top_k больше не параметры метода
+            # напрямую — передаются через extra_body.
+            "extra_body": {"temperature": temperature},
         }
         if system_prompt:
             kwargs["system"] = system_prompt
