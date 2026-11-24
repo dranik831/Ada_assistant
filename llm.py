@@ -1,6 +1,7 @@
 import json
 import logging
 import re
+from urllib.parse import urlsplit
 
 from openai import AsyncOpenAI
 from anthropic import AsyncAnthropic
@@ -77,6 +78,15 @@ class _Provider:
     async def _complete_anthropic(self, messages, tools, temperature, max_tokens, timeout_override) -> NormalizedMessage:
         client = self.client.with_options(timeout=timeout_override) if timeout_override else self.client
         system_prompt, anthro_messages = _to_anthropic_messages(messages)
+        if (system_prompt and urlsplit(self.base_url or "").hostname == "vibecode.moe"
+                and anthro_messages and anthro_messages[0]["role"] == "user"
+                and isinstance(anthro_messages[0]["content"], str)):
+            # Этот шлюз не учитывает system, но учитывает отдельный текстовый блок.
+            first = anthro_messages[0]
+            first["content"] = [
+                {"type": "text", "text": system_prompt},
+                {"type": "text", "text": first["content"]},
+            ]
         kwargs = {
             "model": self.model,
             "messages": anthro_messages,
@@ -177,10 +187,12 @@ class UniversalAgent:
         last_exc = None
         for i, provider in enumerate(self.providers):
             try:
-                return await provider.complete(
+                response = await provider.complete(
                     messages=messages, tools=tools, temperature=temperature,
                     max_tokens=max_tokens, timeout_override=timeout_override,
                 )
+                logger.debug("Ответ LLM получен от %s", provider)
+                return response
             except Exception as exc:
                 last_exc = exc
                 if i + 1 < len(self.providers):
