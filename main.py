@@ -1,4 +1,5 @@
 import sys
+import atexit
 import os
 import asyncio
 import logging
@@ -7,6 +8,8 @@ import json
 import random
 from collections import defaultdict
 from datetime import datetime
+from contextlib import AsyncExitStack
+from pathlib import Path
 from telethon import TelegramClient, events, errors
 from telethon.tl.types import User, Channel, Chat
 from telethon.network.connection import ConnectionTcpMTProxyRandomizedIntermediate
@@ -20,9 +23,12 @@ from llm import UniversalAgent
 from brain import Brain, format_message_line
 import module_system
 from autonomy import AutonomyEngine
+from control_channel import serve
+from control_edit import make_editor
+from process_lock import InstanceRunning, instance_lock
 
 logging.basicConfig(
-    level=logging.INFO,
+    level=os.getenv("ADA_LOG_LEVEL", "INFO").upper(),
     format="%(asctime)s [%(levelname)s] [%(name)s]: %(message)s",
     handlers=[
         logging.StreamHandler(sys.stdout),
@@ -30,6 +36,15 @@ logging.basicConfig(
     ]
 )
 logger = logging.getLogger("Ada.Main")
+
+if __name__ == "__main__":
+    process_lock = instance_lock(config.DATA_DIR / "ada.lock")
+    try:
+        process_lock.__enter__()
+    except InstanceRunning:
+        logger.error("Ада уже запущена.")
+        sys.exit(2)
+    atexit.register(process_lock.__exit__, None, None, None)
 
 db = Database()
 emotions = EmotionSystem(db)
@@ -63,7 +78,6 @@ async def send_user_message(target_id: int, text: str):
     enqueue_message(target_id, text)
 
 autonomy = AutonomyEngine(db, brain, emotions, send_user_message)
-_instance_lock_file = None
 
 _pending_messages: dict[tuple[int, int], dict] = {}
 
@@ -313,300 +327,6 @@ async def check_admin(sender: User) -> bool:
         return True
     return False
 
-async def handle_admin_command(event, command: str, args: list) -> bool:
-    cmd = command.lower()
-
-    if cmd == "/status":
-        state = await emotions.get_state()
-        traits = personality.get_traits()
-        auto = await db.get_kv("autonomy_enabled", "true" if config.AUTONOMY_ENABLED else "false")
-        
-        emo_lines = "\n".join([f"• {k}: {v}" for k, v in state.items()])
-        trait_lines = "\n".join([f"• {k}: {v}" for k, v in traits.items()])
-        
-        text = (
-            f"🧠 **Состояние Ады (Gemini ReAct + Shell + Search):**\n\n"
-            f"**Эмоции:**\n{emo_lines}\n\n"
-            f"**Черты:**\n{trait_lines}\n\n"
-            f"**Автономность:** {'ВКЛ' if auto == 'true' else 'ВЫКЛ'}"
-        )
-        await event.reply(text)
-        return True
-
-    elif cmd == "/set_mood" and len(args) >= 2:
-        try:
-            await emotions.set_emotion(args[0].lower(), int(args[1]))
-            await event.reply(f"Настроение обновлено: `{args[0]}` = {args[1]}")
-        except ValueError:
-            pass
-        return True
-
-    elif cmd == "/set_trait" and len(args) >= 2:
-        try:
-            if personality.set_trait(args[0].lower(), int(args[1])):
-                await event.reply(f"Черта обновлена: `{args[0]}` = {args[1]}")
-        except ValueError:
-            pass
-        return True
-
-    elif cmd == "/autonomy" and len(args) >= 1:
-        state = "true" if args[0].lower() == "on" else "false"
-        await db.set_kv("autonomy_enabled", state)
-        await event.reply(f"Автономность: {'ВКЛ' if state == 'true' else 'ВЫКЛ'}")
-        return True
-
-    elif cmd == "/memory":
-        mems = await db.get_all_memories()
-        if not mems:
-            await event.reply("В долгосрочной памяти пока пусто.")
-        else:
-            lines = [f"- [{m['category']}] {m['content']}" for m in mems[-8:]]
-            await event.reply("**Воспоминания:**\n" + "\n".join(lines))
-        return True
-
-    return False
-
-
-EDIT_CODE = "8338"
-
-async def edit_menu(event) -> None:
-    await event.reply(
-        "🛠 Режим редактирования включён. ИИ не вызывается.\n\n"
-        "Команды:\n"
-        "• эмоции — показать эмоции\n"
-        "• эмоции <название> <0..100> — изменить эмоцию\n"
-        "• состояние — показать аккаунт и текущие настройки\n"
-        "• модули — список модулей и их состояние\n"
-        "• память — показать долговременную память\n"
-        "• память добавить личное|группа|global <текст> — добавить точный факт\n"
-
-        "• память удалить <id> — удалить факт\n"
-        "• память история — журнал изменений фактов\n"
-        "• память очистить — очистить историю и память\n"
-        "• правило <chat_id> <текст> — локальное правило группы\n"
-        "• уважение <id> <0..100> — изменить уважение\n"
-        "• категория <id> стандарт|друг|админ — изменить категорию\n"
-        "• роль добавить <id> стандарт|друг — назначить роль (админа только владелец в конфиге)\n"
-        "• календарь добавить <ISO-дата-время> <название> — добавить событие\n"
-        "• календарь — список событий\n"
-        "• календарь добавить <ISO-дата-время> <название> — добавить встречу\n"
-        "• календарь удалить <id> — удалить встречу\n"
-        "• расписание импорт <JSON> — загрузить расписание\n"
-        "• расписание показать — посмотреть загруженное расписание\n"
-        "• расписание сегодня|завтра — расписание УКРТБ с сайта\n"
-        "• расписание обновить — обновить кэш расписания УКРТБ\n"
-        "• задача отменить <id> — отменить напоминание\n"
-        "• задачи — список напоминаний\n"
-        "• запросы — запросы на встречи\n"
-        "• техработы — включить служебное имя и остановить\n"
-        "• перезапуск — перезапустить процесс через 2 секунды\n"
-        "• промпт — показать системный промпт\n"
-
-        "• промпт установить <текст> — заменить базовый промпт\n"
-        "• имя <текст> — изменить имя Telegram-профиля\n"
-        "• био <текст> — изменить био Telegram-профиля\n"
-        "• выйти — вернуться в обычный режим"
-    )
-
-async def set_profile_name(first_name: str):
-    await tools.update_my_profile(first_name=first_name)
-
-async def restart_process():
-    await client.disconnect()
-    await asyncio.sleep(2)
-    os.execl(sys.executable, sys.executable, *sys.argv)
-
-async def handle_edit_mode(event, text: str) -> bool:
-    tools.set_request_context(event.sender_id or config.ADMIN_USER_ID, event.chat_id or 0, True, True)
-    parts = text.split(maxsplit=3)
-    command = parts[0].lower() if parts else ""
-
-    if command == "выйти":
-        await db.set_kv("edit_mode", "false")
-        await event.reply("Обычный режим восстановлен.")
-        return True
-    if command in {"помощь", "меню", "?"}:
-        await edit_menu(event)
-        return True
-    if command == "эмоции":
-        if len(parts) == 1:
-            await event.reply(json.dumps(await emotions.get_state(), ensure_ascii=False, indent=2))
-        elif len(parts) == 3:
-            try:
-                await emotions.set_emotion(parts[1].lower(), int(parts[2]))
-                await event.reply(f"Эмоция изменена: {parts[1]} = {parts[2]}")
-            except (ValueError, TypeError):
-                await event.reply("Формат: эмоции energy 80")
-        else:
-            await event.reply("Формат: эмоции <название> <0..100>")
-        return True
-    if command == "состояние":
-        active_modules = modules.active_names()
-        provider_chain = " -> ".join(str(p) for p in agent.providers)
-        await event.reply(
-            f"Провайдеры LLM (по приоритету): {provider_chain}\n"
-            f"Автономность: {await db.get_kv('autonomy_enabled', 'true')}\n"
-            f"Модули: {', '.join(active_modules) if active_modules else 'нет активных'}\n"
-            f"Эмоции: {json.dumps(await emotions.get_state(), ensure_ascii=False)}"
-        )
-        return True
-    if command == "модули":
-        await event.reply(
-            modules.status_report()[:3900]
-            + "\n\nВключение и отключение — в .env (MODULE_<ИМЯ>=true/false), затем «перезапуск»."
-        )
-        return True
-    if command == "перезапуск":
-        await event.reply("Перезапускаюсь через 2 секунды.")
-        asyncio.create_task(restart_process())
-        return True
-    if command == "техработы":
-        await db.set_kv("maintenance_restart", "true")
-        await tools.update_my_profile(first_name=config.MAINTENANCE_NAME)
-        await event.reply("Включаю режим технических работ и останавливаюсь.")
-        client.disconnect()
-        return True
-    if command == "уважение" and len(parts) == 3:
-        try:
-            await db.update_user_relationship(int(parts[1]), {"respect": max(0, min(100, int(parts[2])))})
-            await event.reply("Уровень уважения обновлён.")
-        except ValueError:
-            await event.reply("Формат: уважение <id> <0..100>")
-        return True
-    if command == "категория" and len(parts) == 3:
-        category = parts[2].lower()
-        target_id = int(parts[1])
-        if category in {"стандарт", "друг", "админ"}:
-            await db.set_user_category(target_id, category)
-            await event.reply(f"Категория пользователя изменена: {category}.")
-        else:
-            await event.reply("Категория: стандарт, друг или админ.")
-        return True
-    if command == "роль" and len(parts) == 4 and parts[1].lower() == "добавить":
-        category = parts[3].lower()
-        if category not in {"стандарт", "друг"}:
-            await event.reply("Команда может назначить только стандарт или друг.")
-        else:
-            await db.set_user_category(int(parts[2]), category)
-            await event.reply(f"Категория назначена: {category}.")
-        return True
-    if command == "эмоция" and len(parts) == 3:
-        try:
-            await emotions.set_emotion(parts[1].lower(), int(parts[2]))
-            await event.reply("Эмоциональное состояние обновлено.")
-        except ValueError:
-            await event.reply("Формат: эмоция happiness 70")
-        return True
-    if command == "календарь":
-        if len(parts) == 1:
-            await event.reply(await tools.list_calendar_events())
-        elif len(parts) >= 4 and parts[1].lower() == "добавить":
-            title = parts[3]
-            await event.reply(await tools.add_calendar_event(config.ADMIN_USER_ID, title, parts[2]))
-        elif len(parts) == 3 and parts[1].lower() == "удалить":
-            try:
-                await event.reply(await tools.delete_calendar_event(int(parts[2])))
-            except ValueError:
-                await event.reply("Формат: календарь удалить <id>")
-        else:
-            await event.reply("Формат: календарь добавить <ISO-дата-время> <название>")
-        return True
-    if command == "расписание" and len(parts) >= 2 and parts[1].lower() == "показать":
-        await event.reply(await tools.read_schedule())
-        return True
-    if command == "расписание" and len(parts) >= 3 and parts[1].lower() == "импорт":
-        await event.reply(await tools.import_schedule_json(parts[2]))
-        return True
-    if command == "расписание" and len(parts) >= 2 and parts[1].lower() == "обновить":
-        await event.reply(await tools.refresh_my_schedule_cache())
-        return True
-    if command == "расписание" and len(parts) >= 2 and parts[1].lower() in {"сегодня", "завтра", "укртб"}:
-        when = "сегодня" if parts[1].lower() == "сегодня" else ("завтра" if parts[1].lower() == "завтра" else "")
-        await event.reply(await tools.get_college_schedule(when))
-        return True
-    if command == "задача" and len(parts) == 3 and parts[1].lower() == "отменить":
-        try:
-            await event.reply(await tools.cancel_task(int(parts[2])))
-        except ValueError:
-            await event.reply("Формат: задача отменить <id>")
-        return True
-    if command == "задачи":
-        await event.reply(await tools.list_tasks(config.ADMIN_USER_ID))
-        return True
-    if command == "запросы":
-        await event.reply(await tools.list_meeting_requests())
-        return True
-    if command == "правило":
-        if len(parts) >= 3 and parts[1].lstrip("-").isdigit():
-            await db.update_chat_context(int(parts[1]), rules=parts[2])
-            await event.reply(f"Правило чата {parts[1]} сохранено.")
-        elif len(parts) == 3 and parts[1].lower() == "показать" and parts[2].lstrip("-").isdigit():
-            chat_row = await db.get_chat(int(parts[2]))
-            await event.reply(f"Правила чата {parts[2]}:\n{(chat_row or {}).get('rules') or 'не заданы'}")
-        else:
-            await event.reply("Формат: правило <chat_id> <текст правила>")
-        return True
-    if command == "память" and len(parts) == 2 and parts[1].lower() == "история":
-        history = await db.get_memory_history(limit=25)
-        text_out = "\n".join(
-            f"#{h['memory_id']} [{h['action']}] {h['content'][:120]}" for h in history
-        )
-        await event.reply(text_out[:3900] or "История памяти пуста.")
-        return True
-    if command == "память" and len(parts) == 2 and parts[1].lower() == "очистить":
-        await db.clear_memory()
-        await event.reply("Память, история и журналы очищены.")
-        return True
-    if command == "память":
-        if len(parts) == 1:
-            memories = await db.list_scoped_memories(60)
-            text_out = "\n".join(
-                f"#{m['id']} [{m['scope']}/{m['category']}; {m['confidence']:.2f}] {m['content']}"
-                for m in memories
-            )
-            await event.reply(text_out[:3900] or "Память пуста.")
-
-        elif len(parts) == 4 and parts[1].lower() == "добавить":
-            scope = parts[2].lower()
-            if scope not in {"личное", "группа", "global"}:
-                await event.reply("Область памяти: личное, группа или global.")
-            else:
-                await db.add_scoped_memory(
-                    {"личное": "person", "группа": "group", "global": "global"}[scope],
-                    parts[3],
-                    category="explicit_fact",
-                    owner_id=config.ADMIN_USER_ID if scope == "личное" else None,
-                    chat_id=event.chat_id if scope == "группа" else None,
-                    importance=8,
-                    confidence=1.0,
-                    source="owner_edit_mode",
-                )
-                await event.reply("Подтверждённый факт добавлен.")
-        elif len(parts) == 3 and parts[1].lower() == "удалить":
-            try:
-                await db.delete_memory(int(parts[2]))
-                await event.reply("Факт удалён.")
-
-            except ValueError:
-                await event.reply("Формат: память удалить <id>")
-        else:
-            await event.reply("Формат: память добавить <категория> <текст>")
-        return True
-    if command == "промпт":
-        if len(parts) == 1:
-            await event.reply(personality.get_prompt()[:3900])
-        elif len(parts) >= 3 and parts[1].lower() == "установить":
-            personality.set_prompt(parts[2])
-            await event.reply("Базовый промпт обновлён.")
-        return True
-    if command in {"имя", "био"} and len(parts) >= 2:
-        value = text.partition(" ")[2].strip()
-        result = await tools.update_my_profile(first_name=value if command == "имя" else "", about=value if command == "био" else "")
-        await event.reply(result)
-        return True
-    await event.reply("Неизвестная команда. Напишите «меню» или «выйти».")
-    return True
-
 @client.on(events.NewMessage(incoming=True))
 async def on_incoming_message(event):
     sender = await event.get_sender()
@@ -615,6 +335,9 @@ async def on_incoming_message(event):
         return
 
     text = event.raw_text.strip()
+    if event.is_private and re.fullmatch(r"редакт(?:р)?ирование(?:\s+8338)?", text, re.IGNORECASE):
+        await event.reply("перенесено в бота")
+        return
     if event.message.voice or event.message.audio or event.message.video_note:
         await event.reply("Я не могу прослушивать голосовые и звонки. Напиши это текстом — так будет удобнее.")
         return
@@ -626,15 +349,6 @@ async def on_incoming_message(event):
 
     me = await client.get_me()
     is_admin = await check_admin(sender)
-
-    if is_admin and event.is_private and text.lower() == f"редактирование {EDIT_CODE}":
-        await db.set_kv("edit_mode", "true")
-        await edit_menu(event)
-        return
-
-    if is_admin and event.is_private and await db.get_kv("edit_mode", "false") == "true":
-        await handle_edit_mode(event, text)
-        return
 
     remember_match = re.match(r"^запомни\s*[:,-]?\s*(.+)$", text, flags=re.IGNORECASE | re.DOTALL)
     if remember_match:
@@ -660,12 +374,6 @@ async def on_incoming_message(event):
         greeting = "Здравствуйте, я секретарь Драника. Чтобы занять время встречи с ним или передать ему что-то, напишите мне."
         await event.reply(greeting)
         await db.save_message(0, "ada", greeting, chat_id=event.chat_id)
-
-    # Обработка команд админа
-    if is_admin and text.startswith("/"):
-        parts = text.split()
-        if await handle_admin_command(event, parts[0], parts[1:]):
-            return
 
     # Триггеры автономности
     if text.lower() in ["разрешить писать первой", "пиши мне", "/optin"]:
@@ -848,27 +556,18 @@ async def on_raw_event(update):
     except Exception:
         logger.exception("Ошибка журналирования реакции")
 
-def acquire_instance_lock():
-    global _instance_lock_file
-    lock_path = config.DATA_DIR / "ada.lock"
-    _instance_lock_file = open(lock_path, "a+", encoding="utf-8")
-    try:
-        if _instance_lock_file.tell() == 0:
-            _instance_lock_file.write("0")
-            _instance_lock_file.flush()
-        if os.name == "nt":
-            import msvcrt
-            _instance_lock_file.seek(0)
-            msvcrt.locking(_instance_lock_file.fileno(), msvcrt.LK_NBLCK, 1)
-        else:
-            import fcntl
-            fcntl.flock(_instance_lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except (OSError, BlockingIOError):
-        logger.error("Ада уже запущена: не удалось получить lock %s", lock_path)
-        raise SystemExit(2)
-
 async def main():
-    acquire_instance_lock()
+    stop, ready = asyncio.Event(), asyncio.Event()
+    async with AsyncExitStack() as stack:
+        endpoint = os.environ.pop("ADA_CONTROL_ENDPOINT", "")
+        token = os.environ.pop("ADA_CONTROL_SECRET", "")
+        if endpoint and token:
+            editor = make_editor(db, emotions, personality, modules, agent, tools, stop)
+            await stack.enter_async_context(serve(Path(endpoint), token, editor, stop, ready))
+        await run_ada(stop, ready)
+
+
+async def run_ada(stop, ready):
     logger.info("Процесс Ады запущен; инициализация базы данных")
     await db.init()
     logger.info(
@@ -891,7 +590,7 @@ async def main():
         await tools.update_my_profile(first_name=saved_profile_name or config.NORMAL_NAME)
         await db.set_kv("maintenance_restart", "false")
         me = await client.get_me()
-    print(f"[+] Ада в сети: {me.first_name} (@{me.username or 'без юзернейма'})")
+    logger.info("Ада в сети: %s (@%s)", me.first_name, me.username or "без юзернейма")
 
     await autonomy.start()
     print("[+] Модуль автономности активирован.")
@@ -900,20 +599,29 @@ async def main():
     print(f"[+] Модули: {', '.join(active_modules) if active_modules else 'нет активных'}")
     if os.name == "nt" and start_overlay():
         print("[+] Локальное меню: Ctrl+Alt+A")
+    ready.set()
+    stopped = asyncio.create_task(stop.wait())
+    disconnected = asyncio.ensure_future(client.run_until_disconnected())
     try:
-        await client.run_until_disconnected()
+        done, _ = await asyncio.wait({stopped, disconnected}, return_when=asyncio.FIRST_COMPLETED)
+        if disconnected in done:
+            await disconnected
     finally:
+        ready.clear()
+        stopped.cancel()
         autonomy.stop()
-        await module_system.run_shutdown_hooks()
-        if await db.get_kv("maintenance_restart", "false") != "true":
-            await db.set_kv("maintenance_restart", "true")
-            try:
-                await tools.update_my_profile(first_name=config.MAINTENANCE_NAME)
-            except Exception:
-                logger.exception("Не удалось установить служебное имя")
+        try:
+            await module_system.run_shutdown_hooks()
+            if await db.get_kv("maintenance_restart", "false") != "true":
+                await db.set_kv("maintenance_restart", "true")
+                if client.is_connected():
+                    await tools.update_my_profile(first_name=config.MAINTENANCE_NAME)
+        finally:
+            await client.disconnect()
+            await asyncio.gather(stopped, disconnected, return_exceptions=True)
 
 if __name__ == "__main__":
     try:
         asyncio.run(main())
-    except (KeyboardInterrupt, SystemExit):
+    except KeyboardInterrupt:
         print("\n[!] Остановка системы.")

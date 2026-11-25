@@ -20,6 +20,11 @@ TG_PHONE=
 ADMIN_USERNAME=dranik83
 ADMIN_USER_ID=0
 
+# Отдельный Telegram-бот управления (control_bot.py)
+CONTROL_BOT_TOKEN=
+CONTROL_BOT_ALLOWED_IDS=
+ADA_LOG_LEVEL=INFO
+
 # Цепочка провайдеров LLM в порядке приоритета (через запятую). Первый
 # отвечающий используется; при любой ошибке Ада переходит к следующему.
 # Доступны: openai_compatible, gemini, anthropic.
