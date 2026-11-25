@@ -277,6 +277,8 @@ def make_editor(db, emotions, personality, modules, agent, tools, stop):
         if command == "промпт":
             if len(parts) == 1:
                 await event.reply(personality.get_prompt()[:3900])
+            elif len(parts) == 2 and parts[1].lower() == "базовый":
+                await event.reply(personality.get_base_prompt())
             elif len(parts) >= 3 and parts[1].lower() == "установить":
                 personality.set_prompt(text.split(maxsplit=2)[2])
                 await event.reply("Базовый промпт обновлён.")

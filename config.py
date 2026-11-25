@@ -23,6 +23,8 @@ ADMIN_USER_ID=0
 # Отдельный Telegram-бот управления (control_bot.py)
 CONTROL_BOT_TOKEN=
 CONTROL_BOT_ALLOWED_IDS=
+CONTROL_WEB_URL=
+CONTROL_WEB_PORT=8765
 ADA_LOG_LEVEL=INFO
 
 # Цепочка провайдеров LLM в порядке приоритета (через запятую). Первый

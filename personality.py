@@ -60,8 +60,10 @@ class PersonalityManager:
         self.save()
 
     def get_prompt(self) -> str:
-        prompt = self.data.get("base_prompt", DEFAULT_PERSONALITY["base_prompt"])
-        return prompt + self._local_persona()
+        return self.get_base_prompt() + self._local_persona()
+
+    def get_base_prompt(self) -> str:
+        return self.data.get("base_prompt", DEFAULT_PERSONALITY["base_prompt"])
 
     @staticmethod
     def _local_persona() -> str:

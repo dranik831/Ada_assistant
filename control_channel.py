@@ -37,7 +37,7 @@ async def serve(endpoint, token, edit, stop, ready):
                 reply = "stopping"
             elif not ready.is_set() or stop.is_set():
                 reply = "Ада ещё не готова или останавливается."
-            elif isinstance(command, str) and len(command) <= 12000 and type(actor) is int and actor > 0:
+            elif isinstance(command, str) and len(command) <= 12100 and type(actor) is int and actor > 0:
                 async with edit_lock:
                     try:
                         reply = await asyncio.wait_for(edit(command, actor), 60)

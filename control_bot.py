@@ -8,15 +8,19 @@ import subprocess
 import sys
 import tempfile
 import time
+from collections import deque
 from pathlib import Path
+from urllib.parse import urlsplit
 
+from aiohttp import web
 from aiogram import Bot, Dispatcher, F
 from aiogram.enums import ChatType
 from aiogram.exceptions import TelegramAPIError
-from aiogram.types import BotCommand, Message
+from aiogram.types import BotCommand, InlineKeyboardButton, InlineKeyboardMarkup, Message, WebAppInfo
 from dotenv import dotenv_values
 
 from control_channel import request
+from control_web import EnvEditor, make_app, parse_ids
 from process_lock import InstanceRunning, instance_lock
 
 ROOT = Path(__file__).resolve().parent
@@ -37,6 +41,16 @@ class AdaProcess:
         self.endpoint = endpoint
         self.child = None
         self.secret = ""
+        self.lifecycle = asyncio.Lock()
+
+    async def manage(self, action, actor):
+        async with self.lifecycle:
+            if action == "maintenance":
+                return await self.call("техработы", actor) if self.alive() else await self.status()
+            if action == "restart" and self.alive():
+                await self.stop()
+                await asyncio.sleep(2)
+            return await (self.stop() if action == "stop" else self.start())
 
     @staticmethod
     def external_running():
@@ -102,7 +116,7 @@ class AdaProcess:
 
 
 class LogTail:
-    def __init__(self, path):
+    def __init__(self, path, history_bytes=0):
         self.path = path
         self.identity = None
         self.offset = 0
@@ -111,7 +125,7 @@ class LogTail:
         try:
             stat = path.stat()
             self.identity = (stat.st_dev, stat.st_ino)
-            self.offset = stat.st_size
+            self.offset = max(0, stat.st_size - history_bytes)
         except FileNotFoundError:
             pass
 
@@ -140,25 +154,33 @@ class LogTail:
         return result
 
 
-async def relay_logs(bot, subscriptions, token):
-    tail = LogTail(LOG)
+async def relay_logs(bot, subscriptions, token, allowed, history):
+    tail = LogTail(LOG, history_bytes=65536)
+    initial = True
     while True:
         try:
             rows = await asyncio.to_thread(tail.read)
-            if rows and subscriptions:
-                env = dotenv_values(ROOT / ".env")
+            if rows:
+                env = dotenv_values(ROOT / ".env", interpolate=False)
                 secret_values = {token}
                 secret_values.update(
                     value for key, value in (env | os.environ).items()
-                    if value and len(value) >= 6 and key.endswith(("_KEY", "_TOKEN", "_PASSWORD", "_SECRET", "_HASH"))
+                    if value and len(value) >= 4 and re.search(r"KEY|TOKEN|PASSWORD|SECRET|HASH|PHONE|CREDENTIAL|COOKIE|SESSION", key, re.I)
                 )
+                for value in sorted(secret_values, key=len, reverse=True):
+                    rows = [(level, line.replace(value, "[скрыто]")) for level, line in rows]
+                history.extend((level, line[:2000]) for level, line in rows[-300:])
+                permitted = allowed()
                 for user, levels in tuple(subscriptions.items()):
+                    if initial:
+                        break
+                    if user not in permitted:
+                        subscriptions.pop(user, None)
+                        continue
                     selected = [line for level, line in rows if level in levels]
                     if not selected:
                         continue
                     text = "\n".join(selected)
-                    for value in sorted(secret_values, key=len, reverse=True):
-                        text = text.replace(value, "[скрыто]")
                     if len(text) > 1850:
                         text = text[:1850] + "\n[часть логов пропущена]"
                     try:
@@ -167,18 +189,20 @@ async def relay_logs(bot, subscriptions, token):
                         logging.warning("Не удалось отправить лог пользователю %s (%s).", user, type(exc).__name__)
         except OSError:
             logging.warning("Не удалось прочитать лог Ады.")
+        initial = False
         await asyncio.sleep(2)
 
 
-def make_dispatcher(allowed, ada, subscriptions):
+def make_dispatcher(allowed, ada, subscriptions, miniapp_url=""):
     dp = Dispatcher()
     editing = set()
-    lifecycle = asyncio.Lock()
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(
+        text="Открыть панель", web_app=WebAppInfo(url=miniapp_url))]]) if miniapp_url else None
 
     @dp.message(F.chat.type == ChatType.PRIVATE, F.text)
     async def handle(message: Message):
         actor = message.from_user
-        if actor is None or actor.id not in allowed or actor.is_bot or message.date.timestamp() < started_at:
+        if actor is None or actor.id not in allowed() or actor.is_bot or message.date.timestamp() < started_at:
             return
         text = message.text.strip()
         if not text:
@@ -186,18 +210,16 @@ def make_dispatcher(allowed, ada, subscriptions):
         command, *args = text.split()
         command = command.split("@", 1)[0].lower()
         try:
-            if command in {"/start", "/help"}:
-                reply = MENU
+            if command in {"/start", "/help", "/panel"}:
+                await message.answer(MENU, reply_markup=keyboard)
+                return
             elif command in {"/status", "состояние"}:
                 reply = await ada.status()
                 if command == "состояние" and actor.id in editing and ada.alive():
                     reply += "\n\n" + await ada.call(text, actor.id)
             elif command in {"/start_ada", "/restart", "/stop", "запуск", "перезапуск", "остановка"}:
-                async with lifecycle:
-                    if command in {"/restart", "перезапуск"} and ada.alive():
-                        await ada.stop()
-                        await asyncio.sleep(2)
-                    reply = await (ada.stop() if command in {"/stop", "остановка"} else ada.start())
+                action = {"/restart": "restart", "перезапуск": "restart", "/stop": "stop", "остановка": "stop"}.get(command, "start")
+                reply = await ada.manage(action, actor.id)
             elif command == "/logs":
                 selection = {word.upper() for word in re.split(r"[\s,]+", " ".join(args)) if word}
                 if not selection:
@@ -233,31 +255,47 @@ def make_dispatcher(allowed, ada, subscriptions):
 
 
 async def main():
-    settings = dotenv_values(ROOT / ".env")
+    settings = dotenv_values(ROOT / ".env", interpolate=False)
     token = (settings.get("CONTROL_BOT_TOKEN") or "").strip()
     try:
-        allowed = {int(value.strip()) for value in (settings.get("CONTROL_BOT_ALLOWED_IDS") or "").split(",") if value.strip()}
-        if not allowed or min(allowed) <= 0:
-            raise ValueError
+        allowed = parse_ids(settings.get("CONTROL_BOT_ALLOWED_IDS"))
     except ValueError:
         raise SystemExit("Заполни CONTROL_BOT_ALLOWED_IDS в .env: положительные ID через запятую.")
     if not token:
         raise SystemExit("Вставь токен BotFather в CONTROL_BOT_TOKEN в .env.")
+    url = (settings.get("CONTROL_WEB_URL") or "").strip()
+    if url:
+        parsed = urlsplit(url)
+        if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.path not in ("", "/") or parsed.query or parsed.fragment:
+            raise SystemExit("CONTROL_WEB_URL должен быть публичным HTTPS-адресом на корне домена.")
+    owner = int(settings.get("ADMIN_USER_ID") or 0)
+    if url and owner not in allowed:
+        raise SystemExit("Для Mini App укажи ADMIN_USER_ID и добавь владельца в CONTROL_BOT_ALLOWED_IDS.")
+    env = EnvEditor(ROOT / ".env", ROOT / ".env.example", owner)
     with tempfile.TemporaryDirectory(prefix="ada-control-", dir=DATA) as tmp:
         ada = AdaProcess(Path(tmp) / "port")
         subscriptions = {}
-        dp = make_dispatcher(allowed, ada, subscriptions)
+        history = deque(maxlen=300)
+        dp = make_dispatcher(env.allowed, ada, subscriptions, url)
         async with Bot(token) as bot:
             await bot.delete_webhook(drop_pending_updates=True)
             await bot.set_my_commands([BotCommand(command=cmd, description=label) for cmd, label in (
                 ("start", "Меню"), ("status", "Состояние Ады"), ("start_ada", "Запустить Аду"),
                 ("restart", "Перезапустить Аду"), ("stop", "Остановить Аду"),
                 ("edit", "Режим редактирования"), ("logs", "Подписка на логи"),
-            )])
-            relay = asyncio.create_task(relay_logs(bot, subscriptions, token))
+            )] + ([BotCommand(command="panel", description="Открыть панель")] if url else []))
+            runner = None
+            relay = asyncio.create_task(relay_logs(bot, subscriptions, token, env.allowed, history))
             try:
+                if url:
+                    app = make_app(token=token, env=env, ada=ada, logs=history, assets=ROOT / "control_ui", levels=LEVELS)
+                    runner = web.AppRunner(app, access_log=None)
+                    await runner.setup()
+                    await web.TCPSite(runner, "127.0.0.1", int(settings.get("CONTROL_WEB_PORT") or 8765)).start()
                 await dp.start_polling(bot, allowed_updates=["message"], close_bot_session=False, handle_as_tasks=True)
             finally:
+                if runner:
+                    await runner.cleanup()
                 relay.cancel()
                 await asyncio.gather(relay, return_exceptions=True)
                 if ada.alive():
