@@ -111,9 +111,12 @@ class EnvEditor:
         return f"{key}='{escaped}'\n"
 
 
-def make_app(*, token, env, ada, logs, assets, levels):
+def make_app(*, token, env, ada, logs, assets, levels, proxy_peer=None):
     @web.middleware
     async def access(request, handler):
+        peer = request.transport.get_extra_info("peername") if request.transport else None
+        if proxy_peer and (not peer or peer[0] != proxy_peer):
+            raise web.HTTPForbidden()
         if request.path.startswith("/api/"):
             try:
                 actor = telegram_actor(request.headers.get("X-Telegram-Init-Data", ""), token)

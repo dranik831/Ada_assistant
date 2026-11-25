@@ -1,5 +1,6 @@
 """Telegram Bot API controller. Does not import or start Ada on its own."""
 import asyncio
+import ipaddress
 import logging
 import os
 import re
@@ -264,6 +265,12 @@ async def main():
     if not token:
         raise SystemExit("Вставь токен BotFather в CONTROL_BOT_TOKEN в .env.")
     url = (settings.get("CONTROL_WEB_URL") or "").strip()
+    bind = ipaddress.IPv4Address(settings.get("CONTROL_WEB_BIND") or "127.0.0.1")
+    peer = settings.get("CONTROL_WEB_PROXY_PEER") or None
+    if url and not bind.is_loopback and (not bind.is_private or bind.is_unspecified or not peer):
+        raise SystemExit("Для LAN укажи локальный CONTROL_WEB_BIND и CONTROL_WEB_PROXY_PEER.")
+    if peer:
+        peer = str(ipaddress.IPv4Address(peer))
     if url:
         parsed = urlsplit(url)
         if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.path not in ("", "/") or parsed.query or parsed.fragment:
@@ -288,10 +295,10 @@ async def main():
             relay = asyncio.create_task(relay_logs(bot, subscriptions, token, env.allowed, history))
             try:
                 if url:
-                    app = make_app(token=token, env=env, ada=ada, logs=history, assets=ROOT / "control_ui", levels=LEVELS)
+                    app = make_app(token=token, env=env, ada=ada, logs=history, assets=ROOT / "control_ui", levels=LEVELS, proxy_peer=peer)
                     runner = web.AppRunner(app, access_log=None)
                     await runner.setup()
-                    await web.TCPSite(runner, "127.0.0.1", int(settings.get("CONTROL_WEB_PORT") or 8765)).start()
+                    await web.TCPSite(runner, str(bind), int(settings.get("CONTROL_WEB_PORT") or 8765)).start()
                 await dp.start_polling(bot, allowed_updates=["message"], close_bot_session=False, handle_as_tasks=True)
             finally:
                 if runner:
