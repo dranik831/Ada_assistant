@@ -64,3 +64,4 @@ yarl==1.25.1
 openai-whisper==20250625
 torch==2.15.0
 pillow==13.0.0
+playwright==1.56.0
