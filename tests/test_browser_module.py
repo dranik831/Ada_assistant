@@ -47,17 +47,26 @@ async def check_tool_isolation():
     agent = UniversalAgent.__new__(UniversalAgent)
     agent.tools = tools
     outside = AsyncMock()
-    agent.tool_functions = {"outside_tool": outside}
+    screenshot = AsyncMock(return_value="На странице видно заголовок.")
+    agent.tool_functions = {"outside_tool": outside, "browser_screenshot": screenshot}
     agent._completion = AsyncMock(side_effect=[
-        NormalizedMessage("", [{"id": "test", "name": "outside_tool", "arguments": {}}]),
+        NormalizedMessage("", [{"id": "discover", "name": "list_module_tools",
+                               "arguments": {"module_name": "browser_control"}}]),
+        NormalizedMessage("", [
+            {"id": "outside", "name": "outside_tool", "arguments": {}},
+            {"id": "image", "name": "browser_screenshot", "arguments": {}},
+        ]),
         NormalizedMessage("done", []),
     ])
     registry = module_system.ModuleRegistry(services={"tools": tools})
     registry.modules["browser_control"] = module_system.ModuleInfo(name="browser_control", enabled=True)
     setup(module_system.ModuleContext(registry, "browser_control"))
     with patch.object(module_system, "registry", return_value=registry):
-        await agent.run_turn("test", "/browser test")
+        await agent.run_turn("test", "Посмотри, как выглядит текущая страница")
     outside.assert_not_awaited()
+    screenshot.assert_awaited_once_with()
+    first_specs = agent._completion.await_args_list[0].kwargs["tools"]
+    assert any(spec["function"]["name"] == "fetch_web_page" for spec in first_specs)
     specs = agent._completion.await_args.kwargs["tools"]
     assert specs and all(spec["function"]["name"].startswith("browser_") for spec in specs)
 
@@ -69,7 +78,7 @@ def test_browser_tool_isolation():
 async def check_chromium(root):
     tools = AgentTools(None, None)
     tools.set_request_context(5, 5, True, allow_browser=True)
-    session = BrowserSession(root, headless=True)
+    session = BrowserSession(root)
     with patch("modules.browser_control.BrowserSession", return_value=session):
         actions = browser_tools(tools)
     try:

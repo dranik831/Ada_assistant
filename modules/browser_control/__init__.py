@@ -16,7 +16,7 @@ VERSION = "1.0"
 DEFAULT_ENABLED = False
 
 class BrowserSession:
-    def __init__(self, root: Path, *, headless: bool = False):
+    def __init__(self, root: Path, *, headless: bool = True):
         self.profile = root / "browser-profile"
         self.headless = headless
         self.playwright = None
@@ -79,7 +79,7 @@ def setup(ctx: ModuleContext) -> None:
     tools = ctx.tools
     if tools is None:
         return
-    session = BrowserSession(ctx.config.DATA_DIR)
+    session = BrowserSession(ctx.config.DATA_DIR, headless=ctx.config.BROWSER_HEADLESS)
 
     def allowed():
         return tools.browser_allowed()

@@ -443,7 +443,8 @@ async def on_incoming_message(event):
         tg_message_id=event.id, reply_to_tg_id=reply_msg.id if reply_msg else None,
         reply_to_text=reply_desc,
     )
-    item = {"line": format_message_line(row, max_len=4000), "id": row_id, "text": stored_text}
+    item = {"line": format_message_line(row, max_len=4000), "id": row_id, "text": stored_text,
+            "forwarded": bool(event.fwd_from)}
 
     if not should_reply:
         return
@@ -469,6 +470,7 @@ async def on_incoming_message(event):
     text = "\n".join(entry["text"] for entry in items)
     incoming_lines = "\n".join(entry["line"] for entry in items)
     current_ids = [entry["id"] for entry in items]
+    allow_browser = event.is_private and is_admin and not any(entry["forwarded"] for entry in items)
 
     # Мгновенная отметка о прочтении
     try:
@@ -492,7 +494,7 @@ async def on_incoming_message(event):
                 chat_id=event.chat_id,
                 allow_memory_write=explicit_memory_request,
                 current_message_ids=current_ids,
-                allow_browser=bool(event.is_private and is_admin and re.match(r"^/browser(?:\s|$)", text.strip(), re.I)),
+                allow_browser=allow_browser,
             )
 
 
