@@ -48,8 +48,8 @@ def test_registration_and_isolation():
     registry = module_system.ModuleRegistry()
     registry.modules["ok"] = module_system.ModuleInfo(name="ok", enabled=True)
     registry.modules["bad"] = module_system.ModuleInfo(name="bad", enabled=True)
-    good = module_system.ModuleContext(registry, "ok", {})
-    bad = module_system.ModuleContext(registry, "bad", {})
+    good = module_system.ModuleContext(registry, "ok")
+    bad = module_system.ModuleContext(registry, "bad")
 
     async def do_thing(value: str = "") -> str:
         return f"сделано:{value}"
@@ -80,6 +80,20 @@ def test_registration_and_isolation():
 
     bad.register_tool("do_thing", other, "Дубликат.", {}, [])
     assert registry.tool_functions()["do_thing"] is do_thing
+
+
+def test_lazy_service_after_load():
+    """Сервис, добавленный после загрузки модулей (например brain), должен быть
+    виден модулю, который обращается к нему лениво — не в setup(), а позже."""
+    registry = module_system.ModuleRegistry(services={"db": "fake-db"})
+    registry.modules["late"] = module_system.ModuleInfo(name="late", enabled=True)
+    ctx = module_system.ModuleContext(registry, "late")
+
+    assert ctx.service("brain") is None
+    assert ctx.service("db") == "fake-db"
+
+    registry.set_service("brain", "fake-brain")
+    assert ctx.service("brain") == "fake-brain"
 
 
 def test_load_modules_reports_disabled():
@@ -113,5 +127,6 @@ if __name__ == "__main__":
     test_env_flags()
     test_empty_registry_is_safe()
     test_registration_and_isolation()
+    test_lazy_service_after_load()
     test_load_modules_reports_disabled()
     print("OK: система модулей работает, выключенные модули не ломают ядро")
