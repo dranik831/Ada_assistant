@@ -22,17 +22,23 @@ class AgentTools:
         self._actor_context: ContextVar[int] = ContextVar("ada_actor_context", default=0)
         self._chat_context: ContextVar[int] = ContextVar("ada_chat_context", default=0)
         self._memory_write_context: ContextVar[bool] = ContextVar("ada_memory_write_context", default=False)
+        self._browser_context: ContextVar[bool] = ContextVar("ada_browser_context", default=False)
         self._calendar_lock = asyncio.Lock()
 
 
     def set_admin_context(self, is_admin: bool):
         self._admin_context.set(bool(is_admin))
 
-    def set_request_context(self, actor_id: int, chat_id: int, is_admin: bool, allow_memory_write: bool = False):
+    def set_request_context(self, actor_id: int, chat_id: int, is_admin: bool, allow_memory_write: bool = False,
+                            allow_browser: bool = False):
         self._actor_context.set(actor_id)
         self._chat_context.set(chat_id)
         self._admin_context.set(bool(is_admin))
         self._memory_write_context.set(bool(allow_memory_write))
+        self._browser_context.set(bool(allow_browser and is_admin and actor_id == chat_id and chat_id > 0))
+
+    def browser_allowed(self) -> bool:
+        return self._browser_context.get()
 
     def _is_admin(self) -> bool:
 

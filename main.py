@@ -492,6 +492,7 @@ async def on_incoming_message(event):
                 chat_id=event.chat_id,
                 allow_memory_write=explicit_memory_request,
                 current_message_ids=current_ids,
+                allow_browser=bool(event.is_private and is_admin and re.match(r"^/browser(?:\s|$)", text.strip(), re.I)),
             )
 
 

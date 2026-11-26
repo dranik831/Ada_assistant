@@ -145,11 +145,11 @@ class Brain:
     async def process_interaction(self, user_id: int, incoming_text: str, is_admin: bool,
                                   chat_context: str = "", chat_id: int | None = None,
                                   allow_memory_write: bool = False,
-                                  current_message_ids=()) -> dict:
+                                  current_message_ids=(), allow_browser: bool = False) -> dict:
         """incoming_text — уже оформленные строки нового сообщения (автор, ответ, текст);
         current_message_ids — их id в БД, чтобы не дублировать их в истории."""
         is_group = chat_id is not None and chat_id < 0
-        self.agent.tools.set_request_context(user_id, chat_id or 0, is_admin, allow_memory_write)
+        self.agent.tools.set_request_context(user_id, chat_id or 0, is_admin, allow_memory_write, allow_browser)
 
         user_row = await self.db.get_or_create_user(user_id, is_admin=is_admin)
         current_emotions = await self.emotions.get_state()
