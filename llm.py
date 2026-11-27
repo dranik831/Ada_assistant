@@ -356,7 +356,7 @@ class UniversalAgent:
                     "content": str(res),
                 })
 
-        fallback = "Достигла лимита шагов. Не могу подтвердить, что задача завершена." if browser_turn else "Я выполнила действия."
+        fallback = "Достигла лимита шагов. Не могу подтвердить, что задача завершена."
         return {"must_reply": True, "reply": fallback, "messages": [fallback], "actions": actions_taken}
 
     @staticmethod

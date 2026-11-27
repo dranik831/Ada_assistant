@@ -3,6 +3,7 @@ import atexit
 import os
 import asyncio
 import logging
+import io
 import re
 import json
 import random
@@ -124,6 +125,11 @@ def enqueue_message(chat_id: int, text: str, save: bool = True):
         logger.error("Исходящая очередь переполнена; сообщение в %s потеряно", chat_id)
 
 _LLM_ERROR_NOTICE_INTERVAL = 300
+
+_PRIMARY_SCREEN_REQUEST = re.compile(
+    r"(?:скинь|кинь|пришли|отправь|покажи)(?:\s+мне)?\s+(?:скриншот|скрин)"
+    r"(?:\s+(?:с|со|основного|главного|экрана|монитора))*[.!?]*", re.IGNORECASE,
+)
 _last_llm_error_notice = 0.0
 
 async def notify_llm_error(error_text: str, chat_id: int | None, user_id: int):
@@ -349,6 +355,30 @@ async def on_incoming_message(event):
 
     me = await client.get_me()
     is_admin = await check_admin(sender)
+
+    if (event.is_private and is_admin and not event.fwd_from and modules.tool_specs_for("pc_control")
+            and _PRIMARY_SCREEN_REQUEST.fullmatch(event.raw_text.strip())):
+        from modules.pc_control.tools import capture_primary_screen
+
+        try:
+            shot = await capture_primary_screen()
+        except Exception as exc:
+            logger.warning("Не удалось захватить основной экран (%s)", type(exc).__name__)
+            await event.reply("Не смогла снять основной экран: оба способа захвата не сработали.")
+            return
+        with io.BytesIO(shot) as image:
+            image.name = "primary-screen.png"
+
+            async def send_screenshot():
+                image.seek(0)
+                return await client.send_file(event.chat_id, image, force_document=True, reply_to=event.id)
+
+            try:
+                await send_with_flood_wait(send_screenshot)
+            except (OSError, errors.RPCError) as exc:
+                logger.warning("Не удалось отправить скриншот (%s)", type(exc).__name__)
+                await event.reply("Скриншот сделала, но отправить файл не удалось.")
+        return
 
     remember_match = re.match(r"^запомни\s*[:,-]?\s*(.+)$", text, flags=re.IGNORECASE | re.DOTALL)
     if remember_match:

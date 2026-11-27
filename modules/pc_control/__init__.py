@@ -62,9 +62,18 @@ def setup(ctx: ModuleContext) -> None:
         [],
     )
     ctx.register_tool(
+        "find_desktop_items",
+        pc_tools.find_desktop_items,
+        "Найти файлы и ярлыки на рабочем столе по имени, показать их цели без запуска. Только Создатель.",
+        {"name": {"type": "string"}},
+        ["name"],
+    )
+    ctx.register_tool(
         "open_on_pc",
         pc_tools.open_on_pc,
         "ПК Создателя: открыть сайт (URL), ярлык с рабочего стола (по имени), файл или папку. "
+        "Проверяет новый процесс, окно экземпляра Prism Launcher или локальный порт сервера Minecraft. "
+        "Учитывай, что подтверждено в результате. При нескольких совпадениях уточни цель у владельца. "
         "app='vscode' — открыть папку/файл в VS Code. Только Создатель.",
         {"target": {"type": "string"}, "app": {"type": "string"}},
         ["target"],

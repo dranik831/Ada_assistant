@@ -7,8 +7,10 @@
 
 import asyncio
 import base64
+import io
 import logging
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -16,18 +18,35 @@ import webbrowser
 from pathlib import Path
 
 import config
+from .windows_launch import open_and_verify, primary_screen_fallback, shortcut
 
 logger = logging.getLogger("Ada.Module.pc_control")
 
 
 def _find_on_desktop(name: str):
-    """Ищет ярлык/файл на рабочем столе пользователя и общем рабочем столе по части имени."""
-    wanted = name.lower().removesuffix(".lnk").removesuffix(".url")
+    """Return all best matches rather than choosing an ambiguous shortcut."""
+    wanted = Path(name).name.casefold().removesuffix(".lnk").removesuffix(".url")
     desktops = [Path.home() / "Desktop", Path(os.environ.get("PUBLIC", r"C:\Users\Public")) / "Desktop"]
     items = [item for d in desktops if d.is_dir() for item in d.iterdir()]
-    exact = [item for item in items if item.stem.lower() == wanted]
-    partial = [item for item in items if wanted in item.stem.lower()]
-    return (exact or partial or [None])[0]
+    exact = [item for item in items if wanted in (item.name.casefold(), item.stem.casefold())]
+    shortcut_matches = [item for item in items if item.suffix.lower() == ".lnk" and
+                        re.sub(r"\s+-\s+(?:ярлык|shortcut)$", "", item.stem.casefold()) == wanted]
+    partial = [item for item in items if wanted in item.name.casefold()]
+    return sorted(set(exact or shortcut_matches or partial))
+
+
+async def capture_primary_screen():
+    def capture():
+        from PIL import ImageGrab
+
+        with ImageGrab.grab(all_screens=False) as image, io.BytesIO() as buffer:
+            image.save(buffer, "PNG")
+            return buffer.getvalue()
+
+    try:
+        return await asyncio.to_thread(capture)
+    except (ImportError, OSError, RuntimeError):
+        return await primary_screen_fallback()
 
 
 class PcControlTools:
@@ -72,10 +91,10 @@ class PcControlTools:
             if err_decoded.strip():
                 res.append(f"STDERR:\n{err_decoded.strip()}")
             if not res:
-                res.append("Команда выполнена успешно (вывод пуст).")
+                res.append("Вывод команды пуст.")
 
             output = "\n".join(res)
-            return output[:3000]
+            return f"Код выхода: {process.returncode}.\n{output[:2850]}"
         except asyncio.TimeoutError:
             return "Таймаут выполнения команды (превышено 45 секунд)."
         except Exception as e:
@@ -90,21 +109,47 @@ class PcControlTools:
             return "Не указано, что открыть."
         try:
             if target.lower().startswith(("http://", "https://")):
-                webbrowser.open(target)
-                return f"Открыла в браузере: {target}"
+                if await asyncio.to_thread(webbrowser.open, target):
+                    return "Адрес передан браузеру. Загрузка страницы не проверена."
+                return "Не удалось передать адрес браузеру."
             path = Path(os.path.expandvars(os.path.expanduser(target)))
             if not path.exists():
-                path = _find_on_desktop(target)
-                if path is None:
+                matches = _find_on_desktop(target)
+                if not matches:
                     return f"Не нашла «{target}»: это не URL, не существующий путь и не ярлык на рабочем столе."
+                if len(matches) > 1:
+                    return "Найдено несколько совпадений. Уточни цель: " + ", ".join(str(item) for item in matches[:10])
+                path = matches[0]
+            path = path.resolve()
             if app.strip().lower() in {"vscode", "code", "vs code"}:
                 # URI-схема VS Code: без cmd-обёртки code.cmd и без разбора аргументов шеллом.
                 os.startfile("vscode://file/" + path.resolve().as_posix())
-                return f"Открыла в VS Code: {path}"
-            os.startfile(str(path))
-            return f"Открыла: {path}"
-        except OSError as e:
+                return f"Путь передан VS Code: {path}. Окно не проверено."
+            return await open_and_verify(path)
+        except (OSError, ValueError, TimeoutError) as e:
             return f"Не удалось открыть «{target}»: {e}"
+
+    async def find_desktop_items(self, name: str) -> str:
+        if not self._pc_allowed():
+            return "Поиск ярлыков доступен только Создателю в личном чате."
+        if not name.strip():
+            return "Укажи имя или часть имени ярлыка."
+        try:
+            matches = await asyncio.to_thread(_find_on_desktop, name.strip())
+        except OSError as exc:
+            return f"Не удалось прочитать рабочий стол: {exc}"
+        if not matches:
+            return f"Не нашла на рабочем столе совпадений для «{name}»."
+        results = []
+        for path in matches[:5]:
+            target = ""
+            if path.suffix.lower() == ".lnk":
+                try:
+                    target = (await shortcut(path))["TargetPath"]
+                except (OSError, ValueError, TimeoutError):
+                    target = "цель не удалось прочитать"
+            results.append(f"{path} → {target}" if target else str(path))
+        return "\n".join(results)
 
     async def open_terminal(self, command: str = "", cwd: str = "") -> str:
         """Открывает видимое окно терминала (PowerShell), при необходимости сразу с командой."""
@@ -122,7 +167,7 @@ class PcControlTools:
         except OSError as e:
             return f"Не удалось открыть терминал: {e}"
         logger.info("Открыт терминал в %s: %s", workdir, command)
-        return f"Открыла терминал в {workdir}" + (f" с командой: {command}" if command else "") + "."
+        return f"Запуск терминала запрошен в {workdir}. Окно и результат команды не проверены."
 
     async def clipboard(self, action: str = "get", text: str = "") -> str:
         """Буфер обмена Windows: action='get' — прочитать, 'set' — записать text."""
