@@ -11,6 +11,7 @@ from unittest.mock import AsyncMock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from tools import AgentTools  # noqa: E402
+from modules.pc_control import tools as pc_tools_module  # noqa: E402
 from modules.pc_control.tools import PcControlTools  # noqa: E402
 from modules.pc_control import windows_launch  # noqa: E402
 
@@ -43,6 +44,26 @@ async def check_launch_verification():
             match.assert_awaited_with(launcher, "Create Aeronautics")
 
 
+async def check_screenshot_tool():
+    tools = AgentTools(None, None)
+    pc = PcControlTools(tools._pc_allowed)
+    tools.set_request_context(5, 5, False)
+    assert "только Создателю" in await pc.capture_desktop_screenshot()
+
+    with tempfile.TemporaryDirectory() as tmp:
+        output = Path(tmp) / "фото и тп" / "ada"
+        tools.set_request_context(5, 5, True)
+        with patch.object(pc_tools_module, "SCREENSHOT_DIR", output), \
+                patch.object(pc_tools_module, "capture_primary_screen", new=AsyncMock(
+                    return_value=b"\x89PNG\r\n\x1a\nfixture")):
+            result = await pc.capture_desktop_screenshot()
+        assert "Проверено: PNG сохранён" in result
+        assert str(output) in result
+        files = list(output.glob("desktop_*.png"))
+        assert len(files) == 1 and files[0].read_bytes().startswith(b"\x89PNG\r\n\x1a\n")
+        assert str(files[0]) in result and files[0].is_file()
+
+
 async def main():
     tools = AgentTools(db=None, tg_client=None)
     pc = PcControlTools(pc_allowed=tools._pc_allowed)
@@ -54,9 +75,10 @@ async def main():
     for actor, chat, admin in denied:
         tools.set_request_context(actor, chat, admin)
         for call in (pc.open_on_pc("https://example.com"), pc.open_terminal("echo hi"),
-                     pc.clipboard("get"), pc.execute_system_command("echo hi"),
-                     pc.read_file(__file__), pc.list_directory("."), pc.write_file("x.txt", "x"),
-                     tools.send_file("me", __file__), pc.show_on_desktop("hi"), pc.find_desktop_items("run")):
+                      pc.clipboard("get"), pc.execute_system_command("echo hi"),
+                      pc.read_file(__file__), pc.list_directory("."), pc.write_file("x.txt", "x"),
+                      tools.send_file("me", __file__), pc.show_on_desktop("hi"), pc.find_desktop_items("run"),
+                      pc.capture_desktop_screenshot()):
             result = await call
             assert "только" in result.lower(), (actor, chat, admin, result)
 
@@ -68,6 +90,7 @@ async def main():
     assert "не найден" in await tools.send_file("me", "__нет_такого_файла_42__")
     assert "не запущено" in await pc.show_on_desktop("hi")
     await check_launch_verification()
+    await check_screenshot_tool()
     print("OK: управление ПК доступно только Создателю в личке")
 
 

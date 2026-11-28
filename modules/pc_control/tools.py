@@ -23,6 +23,9 @@ from .windows_launch import open_and_verify, primary_screen_fallback, shortcut
 logger = logging.getLogger("Ada.Module.pc_control")
 
 
+SCREENSHOT_DIR = Path("D:/фото и тп/ada")
+
+
 def _find_on_desktop(name: str):
     """Return all best matches rather than choosing an ambiguous shortcut."""
     wanted = Path(name).name.casefold().removesuffix(".lnk").removesuffix(".url")
@@ -55,6 +58,29 @@ class PcControlTools:
     def __init__(self, pc_allowed):
         # pc_allowed: () -> bool — проверка «Создатель и в личке», приходит из ядра.
         self._pc_allowed = pc_allowed
+
+    async def capture_desktop_screenshot(self) -> str:
+        """Capture primary desktop and save a PNG for the separate send_file tool."""
+        if not self._pc_allowed():
+            return "Скриншот рабочего стола доступен только Создателю в личном чате."
+        try:
+            image = await capture_primary_screen()
+            if not image.startswith(b"\x89PNG\r\n\x1a\n"):
+                return "Захват экрана вернул некорректный PNG; файл не сохранён."
+            from datetime import datetime
+
+            await asyncio.to_thread(SCREENSHOT_DIR.mkdir, parents=True, exist_ok=True)
+            path = SCREENSHOT_DIR / f"desktop_{datetime.now():%Y%m%d_%H%M%S_%f}.png"
+            written = await asyncio.to_thread(path.write_bytes, image)
+            if written != len(image) or not path.is_file():
+                path.unlink(missing_ok=True)
+                return "Скриншот не удалось проверить после сохранения."
+            return f"<screenshot_result>Проверено: PNG сохранён ({written} байт). Путь: {path}. " \
+                   "Чтобы отправить владельцу, следующим вызови send_file, target — его Telegram ID, " \
+                   "path — указанный путь.</screenshot_result>"
+        except Exception as exc:
+            logger.warning("Не удалось захватить или сохранить экран (%s)", type(exc).__name__)
+            return f"Не удалось сделать и сохранить скриншот: {type(exc).__name__}."
 
     async def execute_system_command(self, command: str) -> str:
         """Выполняет системную команду в PowerShell/Bash. Доступно только Создателю."""

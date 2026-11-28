@@ -62,6 +62,17 @@ def setup(ctx: ModuleContext) -> None:
         [],
     )
     ctx.register_tool(
+        "capture_desktop_screenshot",
+        pc_tools.capture_desktop_screenshot,
+        "По просьбе Создателя сделай скриншот основного экрана Windows и сохрани проверенный PNG "
+        "в D:/фото и тп/ada. Инструмент вернёт точный путь. Чтобы выполнить просьбу отправить скрин, "
+        "сразу следующим отдельным вызовом используй send_file с target=Telegram ID Создателя "
+        "из контекста и path=вернувшийся путь. Не сообщай, что скриншот отправлен, пока send_file не подтвердит отправку. "
+        "Если инструмент вернул ошибку, не выдумывай путь и сообщи об ошибке. Только Создатель в личном чате.",
+        {},
+        [],
+    )
+    ctx.register_tool(
         "find_desktop_items",
         pc_tools.find_desktop_items,
         "Найти файлы и ярлыки на рабочем столе по имени, показать их цели без запуска. Только Создатель.",
@@ -103,7 +114,8 @@ def setup(ctx: ModuleContext) -> None:
         ["text"],
     )
     ctx.register_capability(
-        "execute_system_command / read_file / write_file / list_directory / open_on_pc / "
+        "execute_system_command / read_file / write_file / list_directory / find_desktop_items / "
+        "capture_desktop_screenshot / open_on_pc / "
         "open_terminal / clipboard / show_on_desktop: управление ПК Создателя (только Создатель в личке)."
     )
 
