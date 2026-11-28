@@ -349,8 +349,15 @@ def load_modules(**services) -> ModuleRegistry:
 # --- Удобные обёртки для остального кода ---
 
 async def media_label(message) -> str:
-    """Текстовая пометка о медиа в сообщении; пустая строка, если модуля зрения нет."""
-    return await _registry.call_first(HOOK_MEDIA_LABEL, message) or ""
+    """Describe supported media, retaining its presence when vision is unavailable."""
+    label = await _registry.call_first(HOOK_MEDIA_LABEL, message)
+    if label:
+        return label
+    if getattr(message, "sticker", None):
+        return "[стикер: не удалось рассмотреть]"
+    if getattr(message, "photo", None):
+        return "[фото: не удалось рассмотреть]"
+    return ""
 
 
 async def message_context(message) -> str:

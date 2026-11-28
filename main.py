@@ -342,9 +342,8 @@ async def on_incoming_message(event):
     if event.message.voice or event.message.audio or event.message.video_note:
         await event.reply("Я не могу прослушивать голосовые и звонки. Напиши это текстом — так будет удобнее.")
         return
-    if event.is_private or event.message.mentioned:
-        label = await module_system.media_label(event.message)
-        text = f"{label} {text}".strip() if label else text
+    label = await module_system.media_label(event.message)
+    text = f"{label} {text}".strip() if label else text
     if not text:
         return
 
